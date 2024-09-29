@@ -217,7 +217,7 @@ class DRL4TSP(nn.Module):
         decoder_input = all_decoder_input[:, :, 0].unsqueeze(2)  # 当前无人机的初始位置（后面for循环会更新的） # 是哪一维
 
         # Always use a mask - if no function is provided, we don't update it
-        mask = torch.ones(batch_size, sequence_size, device=device)  # 初始要mask掉仓库
+        mask = torch.ones(batch_size, sequence_size, device=device)  # todo 等等1是mask掉吗
 
         car_id = 0
         # car_load=[torch.ones(batch_size) for i in range(num_car)] #?????????应该要改成batch size大小的元素吧
@@ -247,7 +247,7 @@ class DRL4TSP(nn.Module):
             # mask = self.mask_fn(dynamic, ptr.data).detach()  # detach是分离出来，但是不需要梯度信息。
             mask = self.mask_fn(dynamic, distance, ptr.data).detach()  # 初始化mask：在仓库所以不能去其他仓库
 
-        max_steps = sequence_size if self.mask_fn is None else 2000  # 如果没有设置mask函数，为了避免死循环，这是最大步数。fixme ?啥意思没写反吗
+        max_steps = sequence_size if self.mask_fn is None else 2000  # 如果设置mask函数，为了避免死循环，这是最大步数。
         # distance = self.node_distance(static)
         # Static elements only need to be processed once, and can be used across
         # all 'pointing' iterations. When / if the dynamic elements change,
@@ -256,7 +256,6 @@ class DRL4TSP(nn.Module):
         dynamic_hidden = self.dynamic_encoder(dynamic)
 
         for _ in range(max_steps):  # 主循环
-
             if not mask.byte().any():  # 如果全mask掉了就退出
                 break
 
@@ -314,22 +313,21 @@ class DRL4TSP(nn.Module):
             # tour_idx.append(ptr.data.unsqueeze(1))  # T B 1 # fixme 增加tour idx索引
             tour_idx[car_id].append(ptr.data.unsqueeze(1))  # T B 1 把当前无人机的新访问的点保存起来。
             # ptr=torch.tensor(tour_idx[(car_id+1)%num_car][-1])  fixme ptr 大小B 1。ptr更新！！！更新为下一个无人机的当前位置。
-            ptr = tour_idx[(car_id + 1) % num_car][-1].clone().detach()  # 取出下一台无人机所在的点。
+            next_car_ptr = tour_idx[(car_id + 1) % num_car][-1].clone().detach()  # 取出下一台无人机所在的点。
 
             # And update the mask, so we don't re-visit if we don't need to
             if self.mask_fn is not None:
                 # mask = self.mask_fn(dynamic, ptr.data).detach()  # detach是分离出来，但是不需要梯度信息。
-                mask = self.mask_fn(dynamic, distance,
-                                    ptr.data).detach()  # 根据当前无人机结束新的访问，结合下一台无人机的fixme 注意这个ptr和dynamic需要是新的,因为需要根据下一个无人机的当前位置，判断下一个点不能去哪。
+                # 根据当前无人机结束新的访问，结合下一台无人机的fixme 注意这个ptr和dynamic需要是新的,因为需要根据下一个无人机的当前位置，判断下一个点不能去哪。
+                mask = self.mask_fn(dynamic, distance, next_car_ptr.data).detach()
 
-            # 它的ptr是新的！！
+            # 它的ptr是新的！！(改名为next_car_ptr
             # decoder_input = torch.gather(static, 2, ptr.view(-1, 1, 1).expand(-1, input_size, 1).to('cuda')).detach()  # 更新当前位置信息。
-            decoder_input = torch.gather(static, 2, ptr.view(-1, 1, 1).expand(-1, input_size, 1).to(dynamic.device)).detach()  # 更新当前位置信息。
+            decoder_input = torch.gather(static, 2, next_car_ptr.view(-1, 1, 1).expand(-1, input_size, 1).to(dynamic.device)).detach()  # 更新当前位置信息。
 
             # 车辆序号
             car_id = (car_id + 1) % num_car
         else:
-
             print(f"达到最大迭代次数{max_steps}退出")
 
         # tour_idx = torch.cat(tour_idx, dim=1)  # (batch_size, seq_len)
@@ -464,6 +462,7 @@ class VehicleRoutingDataset(Dataset):
         参数
         ----------
         dynamic: torch.autograd.Variable 的大小为 (1, num_feats, seq_len)
+        chosen_idx:[非常重要] 是当前的无人机的坐标。需要根据当前坐标，mask下一个可能的点。
         """
 
         # 将浮点数转换为整数进行计算
@@ -482,37 +481,37 @@ class VehicleRoutingDataset(Dataset):
         if demands.eq(0).all():  # 即所有batch的里面，地图里面每一个点都没有需求了：
             return demands * 0.
 
-        # todo 这个demand ne 0 会筛选出：所有有需求的city+所有空的仓库节点
-        # 第二项三项筛选出并且loads-chosen_distance需要大于0【因为仓库demand=-1所以不能确保第二项强制loads>chosen】
+        # todo 这个 demand ne 0 会筛选出：所有有需求的city+所有空的仓库节点
+        #  第二项三项筛选出并且loads-chosen_distance需要大于0的city【虽然这一条会涉及到仓库，但是先假设后续会单独对仓库进行处理，这里怎么样都不管】
         new_mask = demands.ne(0) * demands.lt(loads - chosen_distance) * (loads - chosen_distance > 0)
 
         # 我们应该避免连续两次前往仓库
         # repeat_home = chosen_idx.ne(0)
-        # if repeat_home.any():
+        # if repeat_home.any(): # 不在仓库的可以回去。
         #     new_mask[repeat_home.nonzero(), 0] = 1.
-        # if (~repeat_home).any():
+        # if (~repeat_home).any(): # 在仓库的不能继续访问仓库
         #     new_mask[(~repeat_home).nonzero(), 0] = 0.
-        ############################# 这段是避免连续两次前往仓库（"如果在仓库，下一个就不可以访问仓库"） todo要改成并且
+        ############################# 这段是避免连续两次前往仓库（"如果在仓库，下一个就不可以访问任何仓库"）
         for depot_idx in range(self.num_depots):
             repeat_home = chosen_idx == depot_idx
             if repeat_home.any():
-                new_mask[repeat_home.squeeze().nonzero(), :self.num_depots] = 0  # 如果
+                new_mask[repeat_home.squeeze().nonzero(), :self.num_depots] = 0
         ##############################
 
         # ...除非我们在等待小批量中的其他样本完成
         # has_no_load = loads[:, 0].eq(0).float() # 仓库load=0 说明无人机归位。
         # has_no_demand = demands[:, 1:].sum(1).eq(0).float() # 这里的1要改/所有city都没有demand
-        has_no_demand = demands[:, self.num_depots:].sum(1).eq(0).float()  # 所有city都没有demand  转1和0 【？？的batch？】
+        has_no_demand = demands[:, self.num_depots:].sum(1).eq(0).float() # 所有city都没有demand，转1和0 【避免本无人机在仓库但是其他无人机还没回去）
 
         # combined = (has_no_load + has_no_demand).gt(0) # combine zero：该样本有的 city有demand 并且 车load不等于0
-        combined = has_no_demand.gt(0)  # 如果该batch里面存在city还有demand（=还不能结束）combined应该是B 1 吧？
-        if combined.any():  # 如果该batch里面存在city还有demand（=还不能结束）
+        combined = has_no_demand.gt(0)  #combined应该是B 1 吧？
+        if combined.any():  # 如果该batch里面存在city没有demand（也就是说有的batch结束了，需要让无人机允许留在原地）
             # 首先，我们将所有节点的掩码设置为0，防止访问
             # new_mask[combined.nonzero(), :] = 0.
             # 对于每个样本，如果它已经在仓库中，我们只允许它访问当前所在的仓库
             # for sample_idx in combined.nonzero().squeeze():
-            for sample_idx in combined.nonzero():  # 找到还有需求的batch的id
-                current_location = chosen_idx[sample_idx]
+            for sample_idx in combined.nonzero():  # 找到全部无需求的batch id
+                current_location = chosen_idx[sample_idx]  # 找到当前位置
                 if current_location < self.num_depots:  # 如果当前在仓库
                     # 仅允许访问当前所在的仓库 todo 这个应该不用改？
                     # new_mask[combined.nonzero(), :] = 0.
@@ -522,16 +521,96 @@ class VehicleRoutingDataset(Dataset):
                 #     #new_mask[sample_idx, :self.num_depots] = 1.
                 #     new_mask[sample_idx * torch.ones_like(demands[sample_idx], dtype=torch.long), demands[sample_idx] != 0] = 1.
 
-        # 判断是否存在某一行的mask全为0####################
+        # 判断是否存在某一行的mask全为0#################### todo 这个是打底的补丁，先注释掉看看之后会不会引起异常报错
         all_zero_mask = (new_mask == 0).all(dim=1)
         if all_zero_mask.any():
             # 找到全为0的行的索引
             all_zero_indices = all_zero_mask.nonzero(as_tuple=True)[0]
             # 将这些行中chosen_idx对应位置的mask设为1
             new_mask[all_zero_indices, chosen_idx[all_zero_indices]] = 1
+            print("error:存在某一行的mask全为0-------------------------------")
 
         return new_mask.float()
 
+    def update_mask2(self, dynamic, distance, chosen_idx=None):
+        """更新用于隐藏非有效状态的掩码。和上一个相比是只允许无人机返回自己的仓库。
+
+        参数
+        ----------
+        dynamic: torch.autograd.Variable 的大小为 (1, num_feats, seq_len)
+        chosen_idx:[非常重要] 是当前的无人机的坐标。需要根据当前坐标，mask下一个可能的点。
+        """
+
+        # 将浮点数转换为整数进行计算
+        loads = dynamic.data[:, 0]  # (batch_size, seq_len)
+        demands = dynamic.data[:, 1]  # (batch_size, seq_len)
+        nodedistance = distance + distance[:, -1, :].unsqueeze(1)  # 节点之间的距离加上与最近仓库的距离。
+        nodedistance = nodedistance[:, :-1, :]  # todo 着什么距离啊……要改。
+
+        # 计算 chosen_idx 到仓库点的距离
+        depot_distances = distance[torch.arange(distance.size(0)), chosen_idx.squeeze(1), :self.num_depots]
+        # 将 chosen_distance 的前 self.num_depots 个元素替换为 chosen_idx 到仓库点的距离。 todo 检查。
+        chosen_distance = nodedistance[torch.arange(nodedistance.size(0)), chosen_idx.squeeze(1)]
+        chosen_distance[:, :self.num_depots] = depot_distances
+
+        # 如果没有剩余的正需求量，我们可以结束行程。
+        if demands.eq(0).all():  # 即所有batch的里面，地图里面每一个点都没有需求了：
+            return demands * 0.
+
+        # todo 这个 demand ne 0 会筛选出：所有有需求的city+所有空的仓库节点
+        #  第二项三项筛选出并且loads-chosen_distance需要大于0的city【虽然这一条会涉及到仓库，但是先假设后续会单独对仓库进行处理，这里怎么样都不管】
+        new_mask = demands.ne(0) * demands.lt(loads - chosen_distance) * (loads - chosen_distance > 0)
+
+        # 我们应该避免连续两次前往仓库
+        # repeat_home = chosen_idx.ne(0)
+        # if repeat_home.any(): # 不在仓库的可以回去。
+        #     new_mask[repeat_home.nonzero(), 0] = 1.
+        # if (~repeat_home).any(): # 在仓库的不能继续访问仓库
+        #     new_mask[(~repeat_home).nonzero(), 0] = 0.
+        ############################# 这段是避免连续两次前往仓库（"如果在仓库，下一个就不可以访问任何仓库"）
+        for depot_idx in range(self.num_depots):
+            repeat_home = chosen_idx == depot_idx
+            if repeat_home.any():
+                new_mask[repeat_home.squeeze().nonzero(), :self.num_depots] = 0
+        ############################## todo【注意如果无人机不在仓库，还是能访问其他空的、力之所及的仓库。这里要改】
+        # 9.28修改方案：把楼上的条件去掉：任何时刻兜底把所有仓库mask 掉
+        # 可恶，只能按照数组本身所在的位置，判断对应的仓库是几号。
+
+
+
+        # ...除非我们在等待小批量中的其他样本完成
+        # has_no_load = loads[:, 0].eq(0).float() # 仓库load=0 说明无人机归位。
+        # has_no_demand = demands[:, 1:].sum(1).eq(0).float() # 这里的1要改/所有city都没有demand
+        has_no_demand = demands[:, self.num_depots:].sum(1).eq(0).float() # 所有city都没有demand，转1和0 【避免本无人机在仓库但是其他无人机还没回去）
+
+        # combined = (has_no_load + has_no_demand).gt(0) # combine zero：该样本有的 city有demand 并且 车load不等于0
+        combined = has_no_demand.gt(0)  #combined应该是B 1 吧？
+        if combined.any():  # 如果该batch里面存在city没有demand（也就是说有的batch结束了，需要让无人机允许留在原地）
+            # 首先，我们将所有节点的掩码设置为0，防止访问
+            # new_mask[combined.nonzero(), :] = 0.
+            # 对于每个样本，如果它已经在仓库中，我们只允许它访问当前所在的仓库
+            # for sample_idx in combined.nonzero().squeeze():
+            for sample_idx in combined.nonzero():  # 找到全部无需求的batch id
+                current_location = chosen_idx[sample_idx]  # 找到当前位置
+                if current_location < self.num_depots:  # 如果当前在仓库
+                    # 仅允许访问当前所在的仓库 todo 这个应该不用改？
+                    # new_mask[combined.nonzero(), :] = 0.
+                    new_mask[sample_idx, current_location] = 1.
+                # else:
+                #     # 如果不在仓库，但没有需求或者载重为0，则允许访问【demand不为0的仓库】
+                #     #new_mask[sample_idx, :self.num_depots] = 1.
+                #     new_mask[sample_idx * torch.ones_like(demands[sample_idx], dtype=torch.long), demands[sample_idx] != 0] = 1.
+
+        # 判断是否存在某一行的mask全为0#################### todo 这个是打底的补丁，先注释掉看看之后会不会引起异常报错
+        all_zero_mask = (new_mask == 0).all(dim=1)
+        if all_zero_mask.any():
+            # 找到全为0的行的索引
+            # all_zero_indices = all_zero_mask.nonzero(as_tuple=True)[0]
+            # 将这些行中chosen_idx对应位置的mask设为1
+            # new_mask[all_zero_indices, chosen_idx[all_zero_indices]] = 1
+            print("error:存在某一行的mask全为0-------------------------------")
+
+        return new_mask.float()
     def update_dynamic(self, dynamic, distance, chosen_idx, last_visited):  # 加了参数：访问的前一个点。
         # print("update_dynamic:网络预测下一步chosen_idx 是：\n",chosen_idx)
         # print("update_dynamic:当前所在位置last visited 是：\n",last_visited)
@@ -779,7 +858,7 @@ from ipywidgets import interact, interactive, fixed, interact_manual
 # from model import DRL4TSP, Encoder
 # import DRL4TSP, Encoder
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
+print(f"using device:{device}")
 
 # device = torch.device('cpu')
 
@@ -1132,7 +1211,8 @@ if __name__ == '__main__':
     parser.add_argument('--actor_lr', default=1e-4, type=float)  # 学习率，现在在训练第4epoch，我手动改了一下。……………………
     parser.add_argument('--critic_lr', default=1e-4, type=float)
     parser.add_argument('--max_grad_norm', default=2., type=float)
-    parser.add_argument('--batch_size', default=64, type=int)  ##########################
+    # parser.add_argument('--batch_size', default=64, type=int)  ##########################
+    parser.add_argument('--batch_size', default=8, type=int)
     parser.add_argument('--hidden', dest='hidden_size', default=128, type=int)
     parser.add_argument('--dropout', default=0.1, type=float)
     parser.add_argument('--layers', dest='num_layers', default=1, type=int)
@@ -1146,7 +1226,7 @@ if __name__ == '__main__':
 
     # --------------------------------------------------------------------
     args.test = True
-    args.test = False
+    # args.test = False
     # --------------------------------------------------------------------
 
     # print('NOTE: SETTTING CHECKPOINT: ')
