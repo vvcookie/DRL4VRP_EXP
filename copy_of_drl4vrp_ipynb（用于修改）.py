@@ -245,7 +245,7 @@ class DRL4TSP(nn.Module):
         # And update the mask, so we don't re-visit if we don't need to
         if self.mask_fn is not None:
             # mask = self.mask_fn(dynamic, ptr.data).detach()  # detach是分离出来，但是不需要梯度信息。
-            mask = self.mask_fn(dynamic, distance, ptr.data).detach()  # 初始化mask：在仓库所以不能去其他仓库
+            mask = self.mask_fn(dynamic, distance, ptr.data,car_id).detach()  # 初始化mask：在仓库所以不能去其他仓库
 
         max_steps = sequence_size if self.mask_fn is None else 2000  # 如果设置mask函数，为了避免死循环，这是最大步数。
         # distance = self.node_distance(static)
@@ -319,7 +319,8 @@ class DRL4TSP(nn.Module):
             if self.mask_fn is not None:
                 # mask = self.mask_fn(dynamic, ptr.data).detach()  # detach是分离出来，但是不需要梯度信息。
                 # 根据当前无人机结束新的访问，结合下一台无人机的fixme 注意这个ptr和dynamic需要是新的,因为需要根据下一个无人机的当前位置，判断下一个点不能去哪。
-                mask = self.mask_fn(dynamic, distance, next_car_ptr.data).detach()
+                # mask = self.mask_fn(dynamic, distance, next_car_ptr.data).detach()
+                mask = self.mask_fn(dynamic, distance, next_car_ptr.data,(car_id + 1) % num_car).detach()
 
             # 它的ptr是新的！！(改名为next_car_ptr
             # decoder_input = torch.gather(static, 2, ptr.view(-1, 1, 1).expand(-1, input_size, 1).to('cuda')).detach()  # 更新当前位置信息。
@@ -532,7 +533,7 @@ class VehicleRoutingDataset(Dataset):
 
         return new_mask.float()
 
-    def update_mask2(self, dynamic, distance, chosen_idx=None):
+    def update_mask2(self, dynamic, distance, chosen_idx,car_id):
         """更新用于隐藏非有效状态的掩码。和上一个相比是只允许无人机返回自己的仓库。
 
         参数
@@ -561,21 +562,12 @@ class VehicleRoutingDataset(Dataset):
         #  第二项三项筛选出并且loads-chosen_distance需要大于0的city【虽然这一条会涉及到仓库，但是先假设后续会单独对仓库进行处理，这里怎么样都不管】
         new_mask = demands.ne(0) * demands.lt(loads - chosen_distance) * (loads - chosen_distance > 0)
 
-        # 我们应该避免连续两次前往仓库
-        # repeat_home = chosen_idx.ne(0)
-        # if repeat_home.any(): # 不在仓库的可以回去。
-        #     new_mask[repeat_home.nonzero(), 0] = 1.
-        # if (~repeat_home).any(): # 在仓库的不能继续访问仓库
-        #     new_mask[(~repeat_home).nonzero(), 0] = 0.
-        ############################# 这段是避免连续两次前往仓库（"如果在仓库，下一个就不可以访问任何仓库"）
-        for depot_idx in range(self.num_depots):
-            repeat_home = chosen_idx == depot_idx
-            if repeat_home.any():
-                new_mask[repeat_home.squeeze().nonzero(), :self.num_depots] = 0
         ############################## todo【注意如果无人机不在仓库，还是能访问其他空的、力之所及的仓库。这里要改】
-        # 9.28修改方案：把楼上的条件去掉：任何时刻兜底把所有仓库mask 掉
-        # 可恶，只能按照数组本身所在的位置，判断对应的仓库是几号。
-
+        # 9.28修改方案：任何时刻兜底把所有仓库mask掉.
+        new_mask[:, :self.num_depots] = 0
+        # 然后判断让不在仓库的可以回到自己的仓库。……完了不知道是第几号。
+        in_city=(chosen_idx>=self.num_depots)
+        new_mask[in_city.squeeze(),car_id]=1
 
 
         # ...除非我们在等待小批量中的其他样本完成
@@ -593,7 +585,7 @@ class VehicleRoutingDataset(Dataset):
             for sample_idx in combined.nonzero():  # 找到全部无需求的batch id
                 current_location = chosen_idx[sample_idx]  # 找到当前位置
                 if current_location < self.num_depots:  # 如果当前在仓库
-                    # 仅允许访问当前所在的仓库 todo 这个应该不用改？
+                    # 仅允许访问当前所在的仓库
                     # new_mask[combined.nonzero(), :] = 0.
                     new_mask[sample_idx, current_location] = 1.
                 # else:
@@ -1153,7 +1145,7 @@ def train_vrp(args):
                     args.hidden_size,
                     car_load,
                     train_data.update_dynamic,
-                    train_data.update_mask,
+                    train_data.update_mask2,
                     train_data.node_distance,
                     args.num_layers,
                     args.dropout).to(device)
@@ -1219,7 +1211,7 @@ if __name__ == '__main__':
     # parser.add_argument('--train-size',default=1000000, type=int)#fixme!!!!!!!!!!!!
     parser.add_argument('--train-size', default=10, type=int)  # fixme!!!!!!!!!!!!####################
     parser.add_argument('--valid-size', default=100, type=int)
-    parser.add_argument('--depot_num', default=3, type=int)  ###############
+    parser.add_argument('--depot_num', default=5, type=int)  ###############
     # 解析为args
     # args = parser.parse_args() #若在本地跑请使用本行代码
     args = parser.parse_known_args()[0]  # colab环境跑使用
