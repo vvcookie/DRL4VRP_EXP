@@ -226,10 +226,8 @@ class DRL4TSP(nn.Module):
 
         # Structures for holding the output sequences
         # tour_idx, tour_logp = [], [] # 最终的访问序列。
-        tour_logp = []  # todo 改了。tour idx列表在下面直接用初始仓库序列代替
+        tour_logp = []  # tour idx列表在下面直接用初始仓库序列代替
         # tour idx 的大小是num_car,tour length,B,
-        # todo 记得改 tour_idx的求和方式
-        #  ??????????????添加初始的仓库序号。使用cat函数，每一个无人机都要拥有自己初始的仓库下标！按顺序0123
 
         # 使用arange生成初始depot，然后直接调整形状
         initial_depot = torch.arange(num_car).view(num_car, 1, 1)
@@ -242,10 +240,6 @@ class DRL4TSP(nn.Module):
 
         # ptr=torch.tensor(tour_idx[0][-1])  fixme ptr 大小B 1。ptr更新！！！更新为下一个无人机的当前位置。
         ptr = tour_idx[0][-1].clone().detach() # 当前第0辆无人机的位置。从第一辆无人机开始，取最后一个（其实只有一个元素）所在下标。（维度是batchsiz吗？？）
-        # And update the mask, so we don't re-visit if we don't need to
-        if self.mask_fn is not None:
-            # mask = self.mask_fn(dynamic, ptr.data).detach()  # detach是分离出来，但是不需要梯度信息。
-            mask = self.mask_fn(dynamic, distance, ptr.data,car_id).detach()  # 初始化mask：在仓库所以不能去其他仓库
 
         max_steps = sequence_size if self.mask_fn is None else 2000  # 如果设置mask函数，为了避免死循环，这是最大步数。
         # distance = self.node_distance(static)
@@ -256,6 +250,12 @@ class DRL4TSP(nn.Module):
         dynamic_hidden = self.dynamic_encoder(dynamic)
 
         for _ in range(max_steps):  # 主循环
+            if self.mask_fn is not None:
+                # mask = self.mask_fn(dynamic, ptr.data).detach()  # detach是分离出来，但是不需要梯度信息。
+                # 根据当前无人机结束新的访问，结合下一台无人机的fixme 注意这个ptr和dynamic需要是新的,因为需要根据下一个无人机的当前位置，判断下一个点不能去哪。
+                # mask = self.mask_fn(dynamic, distance, next_car_ptr.data).detach()
+                mask = self.mask_fn(dynamic, distance, ptr.data,car_id).detach()
+
             if not mask.byte().any():  # 如果全mask掉了就退出
                 break
 
@@ -310,17 +310,10 @@ class DRL4TSP(nn.Module):
                 logp = logp * (1. - is_done)  # 如果完成了，logp 也是0, 梯度就不会更新了。
 
             tour_logp.append(logp.unsqueeze(1))  # 每个时间t都要储存：因为为了计算整条路径出现的概率，所以是logp.sum(). T B 1
-            # tour_idx.append(ptr.data.unsqueeze(1))  # T B 1 # fixme 增加tour idx索引
+            # tour_idx.append(ptr.data.unsqueeze(1))  # T B 1 # 增加tour idx索引
             tour_idx[car_id].append(ptr.data.unsqueeze(1))  # T B 1 把当前无人机的新访问的点保存起来。
-            # ptr=torch.tensor(tour_idx[(car_id+1)%num_car][-1])  fixme ptr 大小B 1。ptr更新！！！更新为下一个无人机的当前位置。
+            # ptr=torch.tensor(tour_idx[(car_id+1)%num_car][-1])  #ptr 大小B 1。ptr更新！！！更新为下一个无人机的当前位置。
             next_car_ptr = tour_idx[(car_id + 1) % num_car][-1].clone().detach()  # 取出下一台无人机所在的点。
-
-            # And update the mask, so we don't re-visit if we don't need to
-            if self.mask_fn is not None:
-                # mask = self.mask_fn(dynamic, ptr.data).detach()  # detach是分离出来，但是不需要梯度信息。
-                # 根据当前无人机结束新的访问，结合下一台无人机的fixme 注意这个ptr和dynamic需要是新的,因为需要根据下一个无人机的当前位置，判断下一个点不能去哪。
-                # mask = self.mask_fn(dynamic, distance, next_car_ptr.data).detach()
-                mask = self.mask_fn(dynamic, distance, next_car_ptr.data,(car_id + 1) % num_car).detach()
 
             # 它的ptr是新的！！(改名为next_car_ptr
             # decoder_input = torch.gather(static, 2, ptr.view(-1, 1, 1).expand(-1, input_size, 1).to('cuda')).detach()  # 更新当前位置信息。
@@ -328,11 +321,11 @@ class DRL4TSP(nn.Module):
 
             # 车辆序号
             car_id = (car_id + 1) % num_car
+            ptr=next_car_ptr
         else:
             print(f"达到最大迭代次数{max_steps}退出")
 
         # tour_idx = torch.cat(tour_idx, dim=1)  # (batch_size, seq_len)
-        # todo 改维度
 
         tour_idx = [torch.cat(tour_idx[i], dim=1) for i in range(num_car)]  # fixme 包含了每一辆无人机的轨迹
         tour_logp = torch.cat(tour_logp, dim=1)  # (batch_size, seq_len)
