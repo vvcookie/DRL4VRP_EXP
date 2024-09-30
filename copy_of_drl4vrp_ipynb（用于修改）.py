@@ -174,9 +174,11 @@ class DRL4TSP(nn.Module):
         self.decoder = Encoder(static_size, hidden_size)  # 当前位置信息编码器（为什么叫做decoder
         self.pointer = Pointer(hidden_size, num_layers, dropout)  # 指针网络（含GRU）
         self.car_load = car_load
+
         for p in self.parameters():
             if len(p.shape) > 1:
                 nn.init.xavier_uniform_(p)
+
 
         # Used as a proxy initial state in the decoder when not specified 这是小车的初始位置。
 
@@ -204,7 +206,7 @@ class DRL4TSP(nn.Module):
         """
         # 这里已经是坐标的形式了！！！
         batch_size, input_size, sequence_size = static.size()
-        distance = self.node_distance_fn(static)#(B,num_node+1,num_node) # 有一个+1是因为最后一个
+        distance = self.node_distance_fn(static)  # (B,num_node+1,num_node) # 有一个+1是因为最后一个
         # todo 在多仓问题里面，初始位置需要指定并且不重复。或者在本类的forward第一次调用的时候，就指定decode_input
         if decoder_input is None:
             print(
@@ -213,8 +215,6 @@ class DRL4TSP(nn.Module):
         # 获取仓库数量===================================
         num_car = len(decoder_input[0][0])
         num_nodes = static.size(2)
-        # all_decoder_input = decoder_input  # 所有无人机的初始位置坐标（非下标）。维度B，2，num_car。
-        # decoder_input = all_decoder_input[:, :, 0].unsqueeze(2)  # 当前无人机的初始位置（后面for循环会更新的）。初始是第0里辆
         decoder_input = decoder_input[:, :, 0].unsqueeze(2)
 
         # Always use a mask - if no function is provided, we don't update it
@@ -236,11 +236,12 @@ class DRL4TSP(nn.Module):
         initial_depot = initial_depot.expand(num_car, 1, batch_size)
         initial_depot = initial_depot.tolist()
         # 给每个无人机tour里记录初始仓库。
-        tour_idx = [[torch.tensor(initial_depot[i][0]).unsqueeze(1).to(device)] for i in range(num_car)]  # num_car, 1, batch_size
+        tour_idx = [[torch.tensor(initial_depot[i][0]).unsqueeze(1).to(device)] for i in
+                    range(num_car)]  # num_car, 1, batch_size
         # fixme=========================================
 
         # ptr=torch.tensor(tour_idx[0][-1])  #ptr 大小B 1。ptr更新！！！更新为下一个无人机的当前位置。
-        ptr = tour_idx[0][-1].clone().detach() # 当前第0辆无人机的位置。从第一辆无人机开始，取最后一个（其实只有一个元素）所在下标。（维度是batchsiz吗？？）
+        ptr = tour_idx[0][-1].clone().detach()  # 当前第0辆无人机的位置。从第一辆无人机开始，取最后一个（其实只有一个元素）所在下标。（维度是batchsiz吗？？）
 
         max_steps = sequence_size if self.mask_fn is None else 2000  # 如果设置mask函数，为了避免死循环，这是最大步数。
         # distance = self.node_distance(static)
@@ -264,7 +265,8 @@ class DRL4TSP(nn.Module):
             decoder_hidden = self.decoder(decoder_input)  # 编码当前位置xy静态信息
 
             # 指针网络。里面包含GRU
-            probs, last_hh = self.pointer(static_hidden, dynamic_hidden, decoder_hidden, last_hh)  # 得到下一个点的（未mask）概率分布和隐状态。
+            probs, last_hh = self.pointer(static_hidden, dynamic_hidden, decoder_hidden,
+                                          last_hh)  # 得到下一个点的（未mask）概率分布和隐状态。
             probs = F.softmax(probs + mask.log(), dim=1)  # mask操作+softmax
 
             # When training, sample the next step according to its probability.
@@ -294,11 +296,13 @@ class DRL4TSP(nn.Module):
                 # last_visited = tour_idx[-1]
                 last_visited = tour_idx[car_id][-1]
                 # 更新动态信息，传递最后一个访问的点
-                dynamic = self.update_fn(dynamic, distance, ptr.data, last_visited)  # B 2 L 这里还是【当前小车】的load和当前小车的新一步ptr，更新地图里的load和demand
+                dynamic = self.update_fn(dynamic, distance, ptr.data,
+                                         last_visited)  # B 2 L 这里还是【当前小车】的load和当前小车的新一步ptr，更新地图里的load和demand
 
                 # fixme 新增=========================dynamic中的旧load储存，更新新load。所以此后dynamic都是当前无人机访问下一个点后的新环境
                 car_load[car_id] = dynamic[:, 0, 0].clone()  # 随便取第一个仓库的load就好了，存到car_load数组里面。
-                dynamic[:, 0] = car_load[(car_id + 1) % num_car].unsqueeze(1).expand(-1,num_nodes)  # 替换dynamic里的load！把load换成下一个无人机的load，但demand继承。
+                dynamic[:, 0] = car_load[(car_id + 1) % num_car].unsqueeze(1).expand(-1,
+                                                                                     num_nodes)  # 替换dynamic里的load！把load换成下一个无人机的load，但demand继承。
                 # fixme =========================
 
                 dynamic_hidden = self.dynamic_encoder(dynamic)  # 得到当前无人机新访问一个点之后的动态环境的hidden
@@ -317,20 +321,20 @@ class DRL4TSP(nn.Module):
 
             # 它的ptr是新的！！(改名为next_car_ptr
             # decoder_input = torch.gather(static, 2, ptr.view(-1, 1, 1).expand(-1, input_size, 1).to('cuda')).detach()  # 更新当前位置信息。
-            decoder_input = torch.gather(static, 2, next_car_ptr.view(-1, 1, 1).expand(-1, input_size, 1).to(dynamic.device)).detach()  # 更新当前位置信息。
+            decoder_input = torch.gather(static, 2, next_car_ptr.view(-1, 1, 1).expand(-1, input_size, 1).to(
+                dynamic.device)).detach()  # 更新当前位置信息。
 
             # 车辆序号
             car_id = (car_id + 1) % num_car
-            ptr=next_car_ptr
+            ptr = next_car_ptr
         else:
             print(f"达到最大迭代次数{max_steps}退出")
 
         # tour_idx = torch.cat(tour_idx, dim=1)  # (batch_size, seq_len)
 
-        tour_idx = [torch.cat(tour_idx[i], dim=1) for i in range(num_car)]  #包含了每一辆无人机的轨迹
+        tour_idx = [torch.cat(tour_idx[i], dim=1) for i in range(num_car)]  # 包含了每一辆无人机的轨迹
         tour_logp = torch.cat(tour_logp, dim=1)  # (batch_size, seq_len)
         return tour_idx, tour_logp
-
 
 
 """##vrp.py
@@ -382,7 +386,7 @@ class VehicleRoutingDataset(Dataset):
 
         self.num_samples = num_samples
         self.num_depots = num_depots  # 保存仓库数量
-        self.max_load = max_load # 原本max load是未归一化的，carload是归一化的1（但是又被我强行改成30了……）
+        self.max_load = max_load  # 原本max load是未归一化的，carload是归一化的1（但是又被我强行改成30了……）
         self.max_demand = max_demand
 
         # 修改位置生成逻辑以支持多仓库地图
@@ -406,8 +410,7 @@ class VehicleRoutingDataset(Dataset):
         # 然后根据最大载重量进行缩放。例如，如果 load=10 且 max_demand=30，
         # 需求量将缩放到 (0, 3) 范围内
         demands = torch.randint(1, max_demand + 1, dynamic_shape)  # todo 是否要把这里的demand改成相同的？？？？？？
-        demands = demands / float(max_load) # 取消归一化。
-
+        demands = demands / float(max_load)  # 取消归一化。
 
         # 设置仓库的需求量为 0
         ##############################
@@ -440,10 +443,12 @@ class VehicleRoutingDataset(Dataset):
         这个版本是计算【点a-点b-点b最近的仓库】的距离的函数。是”可以访问他人仓库“的功能时使用的
         static的维度:应该是B，2，num_depots+num_city
         '''
-        depot_positions = static[:, :, :self.num_depots] # 维度应该是B，2，num_depots
-        city_positions = static[:, :, self.num_depots:] # 维度应该是B，2，num_city
-        depot_positions_expanded = depot_positions.unsqueeze(2).expand(-1, -1, city_positions.size(2), -1)# B,2,num_city, num_depots
-        distances_to_depot = torch.sqrt(torch.sum((city_positions.unsqueeze(3) - depot_positions_expanded) ** 2, dim=1)) # B,num_city,num_depots
+        depot_positions = static[:, :, :self.num_depots]  # 维度应该是B，2，num_depots
+        city_positions = static[:, :, self.num_depots:]  # 维度应该是B，2，num_city
+        depot_positions_expanded = depot_positions.unsqueeze(2).expand(-1, -1, city_positions.size(2),
+                                                                       -1)  # B,2,num_city, num_depots
+        distances_to_depot = torch.sqrt(
+            torch.sum((city_positions.unsqueeze(3) - depot_positions_expanded) ** 2, dim=1))  # B,num_city,num_depots
         # 取每行最小值作为每个节点到最近仓库的距离
         min_distances, _ = torch.min(distances_to_depot, dim=2)
         # min_distances = torch.cat((torch.zeros(min_distances.size(0), self.num_depots).to('cuda'), min_distances), dim=1)
@@ -463,24 +468,24 @@ class VehicleRoutingDataset(Dataset):
         所以返回值的[b][-1][i]表示在第b个batch里面，第i个node离最近的仓库的距离。（如果第i是仓库则距离=0）
         """
 
-        # 既然要改成只能回到自己的机场，这个之后需要修改。todo
-        depot_positions = static[:, :, :self.num_depots]# 维度应该是B，2，num_depots
-        city_positions = static[:, :, self.num_depots:]# 维度应该是B，2，num_city
-        depot_positions_expanded = depot_positions.unsqueeze(2).expand(-1, -1, city_positions.size(2), -1)# B,2,num_city, num_depots
-        # 计算每个节点到最近仓库的距离
-        distances_to_depot = torch.sqrt(torch.sum((city_positions.unsqueeze(3) - depot_positions_expanded) ** 2, dim=1))# B,num_city,num_depots
-        # 取每行最小值，作为每个city节点到最近仓库的距离 fixme 这个应该不用再取最小值了，这行要删掉。
-        min_distances, _ = torch.min(distances_to_depot, dim=2) # (B,num_city)
-        min_distances = torch.cat( # 这一行本意是在前面加上“每个仓库距离最近的仓库（自己）距离为0”的意思） fixme
-            (torch.zeros(min_distances.size(0), self.num_depots).to(static.device), min_distances), dim=1)
-        # todo
-        #  要在这里写 "每一个city到每一个仓库的距离“矩阵（可以参考上面）
-        # 计算所有节点之间的距离 fixme ？？似乎不用删除？看看mask和update是如何使用的。
+        # # 既然要改成只能回到自己的机场，这个之后需要修改。
+        # depot_positions = static[:, :, :self.num_depots]# 维度应该是B，2，num_depots
+        # city_positions = static[:, :, self.num_depots:]# 维度应该是B，2，num_city
+        # depot_positions_expanded = depot_positions.unsqueeze(2).expand(-1, -1, city_positions.size(2), -1)# B,2,num_city, num_depots
+        # # 计算每个节点到最近仓库的距离
+        # distances_to_depot = torch.sqrt(torch.sum((city_positions.unsqueeze(3) - depot_positions_expanded) ** 2, dim=1))# B,num_city,num_depots
+        # # 取每行最小值，作为每个city节点到最近仓库的距离 fixme 这个应该不用再取最小值了，这行要删掉。
+        # min_distances, _ = torch.min(distances_to_depot, dim=2) # (B,num_city)
+        # min_distances = torch.cat( # 这一行本意是在前面加上“每个仓库距离最近的仓库（自己）距离为0”的意思） fixme
+        #     (torch.zeros(min_distances.size(0), self.num_depots).to(static.device), min_distances), dim=1)
+        # todo 要在这里写 "每一个city到每一个仓库的距离“矩阵（可以参考上面）【算了别写了】
+
+        # 计算所有节点之间的距离 fixme ？？似乎不用删除。看看mask和update是如何使用的。
         distances_between_node = torch.sqrt(
             torch.sum((static.unsqueeze(2) - static.unsqueeze(3)) ** 2, dim=1))  # 计算欧式距离
-        distances = torch.cat((distances_between_node, min_distances.unsqueeze(1)), dim=1)
-        # distances大小为 (betch_size,seq_len+1,seq_len)加上了最近仓库张量
-        return distances
+        # distances = torch.cat((distances_between_node, min_distances.unsqueeze(1)), dim=1)
+
+        return distances_between_node  # distances # distances大小为 (betch_size,seq_len+1,seq_len).加上了最近仓库张量
 
     def update_mask(self, dynamic, distance, chosen_idx=None):
         """更新用于隐藏非有效状态的掩码。
@@ -527,10 +532,10 @@ class VehicleRoutingDataset(Dataset):
         # ...除非我们在等待小批量中的其他样本完成
         # has_no_load = loads[:, 0].eq(0).float() # 仓库load=0 说明无人机归位。
         # has_no_demand = demands[:, 1:].sum(1).eq(0).float() # 这里的1要改/所有city都没有demand
-        has_no_demand = demands[:, self.num_depots:].sum(1).eq(0).float() # 所有city都没有demand，转1和0 【避免本无人机在仓库但是其他无人机还没回去）
+        has_no_demand = demands[:, self.num_depots:].sum(1).eq(0).float()  # 所有city都没有demand，转1和0 【避免本无人机在仓库但是其他无人机还没回去）
 
         # combined = (has_no_load + has_no_demand).gt(0) # combine zero：该样本有的 city有demand 并且 车load不等于0
-        combined = has_no_demand.gt(0)  #combined应该是B 1 吧？
+        combined = has_no_demand.gt(0)  # combined应该是B 1 吧？
         if combined.any():  # 如果该batch里面存在city没有demand（也就是说有的batch结束了，需要让无人机允许留在原地）
             # 首先，我们将所有节点的掩码设置为0，防止访问
             # new_mask[combined.nonzero(), :] = 0.
@@ -558,32 +563,37 @@ class VehicleRoutingDataset(Dataset):
 
         return new_mask.float()
 
-    def update_mask2(self, dynamic, distance, current_idx, car_id):
+    def update_mask2(self, dynamic, n2n_distance, current_idx, car_id):
         """和上一个相比是只允许无人机返回自己的仓库。
 
         dynamic: torch.autograd.Variable 的大小为 (1, num_feats, seq_len)
-        chosen_idx:[非常重要] 是当前的无人机的坐标。需要根据当前坐标，mask下一个可能的点。
+        chosen_idx:[非常重要] 大小(B,1)是当前的无人机的坐标。需要根据当前坐标，mask下一个可能的点。
         """
 
         # 将浮点数转换为整数进行计算
         loads = dynamic.data[:, 0]  # (batch_size, seq_len)
         demands = dynamic.data[:, 1]  # (batch_size, seq_len)
 
-        # fixme 关于距离和需求的处理，要改。
+        # fixme 关于距离和需求的处理，要改。==========================
         '''
-        9.28修改：这里只考虑mask city的逻辑：就算是影响到仓库也没关系，后续会处理仓库进行覆盖。
+        9.28修改：这里只考虑mask city的逻辑：(就算是影响到仓库也没关系，后续会处理仓库进行覆盖。)
             找到当前的位置，并且取出当前点-所有点的距离+所有点回自己的仓库（已经给了carid）的距离 
             （所以我需要node-node 矩阵就够了。因为可以转换成：D(当前点~所有点) +D(自己仓库~所有点)
         '''
-        nodedistance = distance[:,:-1,:] + distance[:, -1, :].unsqueeze(1)  # 节点之间的距离加上与最近仓库的距离。
+        # n2n_distance 是维度为(B,node_num,node_num)的
+        dis_cur2all=n2n_distance[torch.arange(n2n_distance.size(0)),current_idx.squeeze(1)]
+        dis_depot2all=n2n_distance[torch.arange(n2n_distance.size(0)),car_id] # 仓库id=当前car id
 
-        # 计算 chosen_idx 到仓库点的距离
-        depot_distances = distance[torch.arange(distance.size(0)), current_idx.squeeze(1), :self.num_depots]
-        # 将 chosen_distance 的前 self.num_depots 个元素替换为 chosen_idx 到仓库点的距离。 todo 检查。
-        chosen_distance = nodedistance[torch.arange(nodedistance.size(0)), current_idx.squeeze(1)]
-        chosen_distance[:, :self.num_depots] = depot_distances
+        dis_cur2node2depot=dis_cur2all+dis_depot2all # D(当前点~所有点) +D(自己仓库~所有点) 总距离
+
+        # nodedistance = distance[:, :-1, :] + distance[:, -1, :].unsqueeze(1) #(B,node_num, node_num)# 节点之间的距离加上与最近仓库的距离。
+        #
+        # # 计算 chosen_idx 到仓库点的距离
+        # depot_distances = distance[torch.arange(distance.size(0)), current_idx.squeeze(1), :self.num_depots]
+        # # 将 chosen_distance 的前 self.num_depots 个元素替换为 chosen_idx 到仓库点的距离。 todo 检查。
+        # chosen_distance = nodedistance[torch.arange(nodedistance.size(0)), current_idx.squeeze(1)]
+        # chosen_distance[:, :self.num_depots] = depot_distances
         ######################## fixme以上要修改。
-
 
         # 如果没有剩余的正需求量，我们可以结束行程。
         if demands.eq(0).all():  # 即所有batch的里面，地图里面每一个点都没有需求了：
@@ -591,23 +601,22 @@ class VehicleRoutingDataset(Dataset):
 
         # 这个 demand ne 0 会筛选出：所有有需求的city+所有空的仓库节点
         # 第二项三项筛选出并且loads-chosen_distance需要大于0的city【虽然这一条会涉及到仓库，但是先假设后续会单独对仓库进行处理，这里怎么样都不管】
-        new_mask = demands.ne(0) * demands.lt(loads - chosen_distance) * (loads - chosen_distance > 0)
+        new_mask = demands.ne(0) * demands.lt(loads - dis_cur2node2depot) * (loads - dis_cur2node2depot > 0)
 
         ##############################
         # 9.28修改方案：任何时刻兜底把所有仓库mask掉.
         new_mask[:, :self.num_depots] = 0
         # 然后判断让不在仓库的可以回到自己的仓库。……完了不知道是第几号。
-        in_city=(current_idx >= self.num_depots)
-        new_mask[in_city.squeeze(),car_id]=1
-
+        in_city = (current_idx >= self.num_depots)
+        new_mask[in_city.squeeze(), car_id] = 1
 
         # ...除非我们在等待小批量中的其他样本完成
         # has_no_load = loads[:, 0].eq(0).float() # 仓库load=0 说明无人机归位。
         # has_no_demand = demands[:, 1:].sum(1).eq(0).float() # 这里的1要改/所有city都没有demand
-        has_no_demand = demands[:, self.num_depots:].sum(1).eq(0).float() # 所有city都没有demand，转1和0 【避免本无人机在仓库但是其他无人机还没回去）
+        has_no_demand = demands[:, self.num_depots:].sum(1).eq(0).float()  # 所有city都没有demand，转1和0 【避免本无人机在仓库但是其他无人机还没回去）
 
         # combined = (has_no_load + has_no_demand).gt(0) # combine zero：该样本有的 city有demand 并且 车load不等于0
-        combined = has_no_demand.gt(0)  #combined应该是B 1 吧？
+        combined = has_no_demand.gt(0)  # combined应该是B 1 吧？
         if combined.any():  # 如果该batch里面存在city没有demand（也就是说有的batch结束了，需要让无人机允许留在原地）
             # 首先，我们将所有节点的掩码设置为0，防止访问
             # new_mask[combined.nonzero(), :] = 0.
@@ -634,6 +643,7 @@ class VehicleRoutingDataset(Dataset):
             print("error:存在某一行的mask全为0-------------------------------")
 
         return new_mask.float()
+
     def update_dynamic(self, dynamic, distance, next_idx, current_idx):  # 加了参数：访问的前一个点。
         """
         用于更新当前地图的dynamic的函数。啊要用到distance是因为dynamic里面的load需要减去距离……todo load-=demand+distance
@@ -652,8 +662,8 @@ class VehicleRoutingDataset(Dataset):
         # 克隆动态变量，以免破坏图
         all_loads = dynamic[:, 0].clone()
         all_demands = dynamic[:, 1].clone()
-        load = torch.gather(all_loads, 1, next_idx.unsqueeze(1)) # 获得batch里每一个样本，下一个节点的load
-        demand = torch.gather(all_demands, 1, next_idx.unsqueeze(1)) # 获得batch里每一个样本，下一个节点的demand
+        load = torch.gather(all_loads, 1, next_idx.unsqueeze(1))  # 获得batch里每一个样本，下一个节点的load
+        demand = torch.gather(all_demands, 1, next_idx.unsqueeze(1))  # 获得batch里每一个样本，下一个节点的demand
         distance_matrix = distance[:, :-1, :]  # 距离矩阵 todo等等为什么是取到-1啊！！！！【似乎是特殊的含义吗……】
         # 在小批量中 - 如果我们选择访问一个城市，尽可能满足其需求量
         if visit.any():
@@ -712,7 +722,6 @@ class VehicleRoutingDataset(Dataset):
         # print("update_dynamic:网络预测下一步next_idx 是：\n",next_idx)
         # print("update_dynamic:当前所在位置current_idx 是：\n",current_idx)
 
-
         current_idx = current_idx.squeeze()
         # 根据【下一个节点】是访问仓库还是城市，以不同方式更新dynamic
         ##############################
@@ -723,15 +732,15 @@ class VehicleRoutingDataset(Dataset):
         # 克隆动态变量，以免破坏图
         all_loads = dynamic[:, 0].clone()
         all_demands = dynamic[:, 1].clone()
-        load = torch.gather(all_loads, 1, next_idx.unsqueeze(1)) # 获得batch里每一个样本，下一个节点的load
-        demand = torch.gather(all_demands, 1, next_idx.unsqueeze(1)) # 获得batch里每一个样本，下一个节点的demand
+        load = torch.gather(all_loads, 1, next_idx.unsqueeze(1))  # 获得batch里每一个样本，下一个节点的load
+        demand = torch.gather(all_demands, 1, next_idx.unsqueeze(1))  # 获得batch里每一个样本，下一个节点的demand
         distance_matrix = distance[:, :-1, :]  # 距离矩阵 todo等等为什么是取到-1啊！！！！【似乎是特殊的含义吗……】
         # 在batch中 - 如果我们下一个点选择访问一个城市：
         if visit.any():
-            diff_distances = distance_matrix[ # fixme 这里距离还要修改
+            diff_distances = distance_matrix[  # fixme 这里距离还要修改
                 torch.arange(distance_matrix.size(0)), current_idx, next_idx.squeeze()].unsqueeze(1)
             # 上一次选择的节点与这次选择的节点的差值
-            new_load = torch.clamp(load - demand - diff_distances, min=0) # fixme ……这个clamp……
+            new_load = torch.clamp(load - demand - diff_distances, min=0)  # fixme ……这个clamp……
             new_demand = torch.clamp(demand - load, min=0)
 
             # 将载重量广播到所有节点，但单独更新需求量
@@ -752,7 +761,8 @@ class VehicleRoutingDataset(Dataset):
 
         # 使用布尔索引和高效的张量操作来更新all_demands【意思是：把当前节点是depot的样本，的对应depot的demand更新为-1
         # all_demands[depot_visited_idx.to('cuda'), last_visited.to('cuda')[depot_visited_idx]] = -1. #+ new_load[depot_visited_idx].reshape(-1,2)
-        all_demands[depot_visited_idx.to(dynamic.device), current_idx.to(dynamic.device)[depot_visited_idx]] = -1.  # + new_load[depot_visited_idx].reshape(-1,2)
+        all_demands[depot_visited_idx.to(dynamic.device), current_idx.to(dynamic.device)[
+            depot_visited_idx]] = -1.  # + new_load[depot_visited_idx].reshape(-1,2)
         # -------------------------
 
         # 在batch中 - 如果我们下一个选择访问一个仓库
@@ -760,11 +770,12 @@ class VehicleRoutingDataset(Dataset):
         #     all_loads[depot.nonzero().squeeze()] = 1.
         #     all_demands[depot.nonzero().squeeze(), 0] = 0.
         if depot.any():
-            all_loads[depot.nonzero().squeeze()] = float(self.car_load) # todo 检查这个car load的意思
+            all_loads[depot.nonzero().squeeze()] = float(self.car_load)  # todo 检查这个car load的意思
             all_demands[depot.squeeze(), next_idx[depot.squeeze()]] = 0.
 
         new_dynamic = torch.cat((all_loads.unsqueeze(1), all_demands.unsqueeze(1)), 1)
-        return new_dynamic.clone().detach().to(device=dynamic.device)# 避免额外的计算开销和不必要的内存使用
+        return new_dynamic.clone().detach().to(device=dynamic.device)  # 避免额外的计算开销和不必要的内存使用
+
 
 def reward(static, tour_indices, depot_number):  # 这个是旧的reward，,depot_number参数没用
     """
@@ -871,7 +882,7 @@ def render(static, tour_indices, num_depots, save_path):
             if len(idx.size()) == 1:
                 idx = idx.unsqueeze(0)
             idx = idx.expand(static.size(1), -1)
-            print("render function",idx)
+            print("render function", idx)
             data = torch.gather(static[i].data, 1, idx).cpu().numpy()
             # start = static[i, :, 0].cpu().data.numpy()
             # x = np.hstack((start[0], data[0], start[0]))
@@ -947,6 +958,7 @@ from ipywidgets import interact, interactive, fixed, interact_manual
 # import DRL4TSP, Encoder
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"using device:{device}")
+
 
 # device = torch.device('cpu')
 
@@ -1114,7 +1126,7 @@ def train(actor, critic, task, num_nodes, train_data, valid_data, reward_fn,
             # 将奖励估计值，真实奖励值，actor损失平均求和后写入空列表中
             critic_rewards.append(torch.mean(critic_est.detach()).item())
             rewards.append(torch.mean(reward.detach()).item())
-            losses.append(torch.mean(actor_loss.detach()).item()) # loss放每个batch的损失
+            losses.append(torch.mean(actor_loss.detach()).item())  # loss放每个batch的损失
 
             # 每100次输出
             if (batch_idx + 1) % 100 == 0:
@@ -1199,6 +1211,7 @@ def train(actor, critic, task, num_nodes, train_data, valid_data, reward_fn,
     plt.grid(True)
     plt.show()
 
+
 def train_vrp(args):
     # Goals from paper: 【注意这是纯vrp问题，没有加上路径损耗。可不能直接比……】
     # VRP10, Capacity 20:  4.84  (Greedy)
@@ -1211,14 +1224,14 @@ def train_vrp(args):
     # from tasks.vrp import VehicleRoutingDataset
 
     # Determines the maximum amount of load for a vehicle based on num nodes
-    LOAD_DICT = {10: 20, 20: 30, 30: 35, 50: 40, 100: 50, 200: 80} # todo 以后改
+    LOAD_DICT = {10: 20, 20: 30, 30: 35, 50: 40, 100: 50, 200: 80}  # todo 以后改
     MAX_DEMAND = 1
     STATIC_SIZE = 2  # (x, y)
     DYNAMIC_SIZE = 2  # (load, demand)
 
     max_load = LOAD_DICT[args.num_nodes]
     car_load = 30.  ######################### fixme 之后修改吧先不动了。
-    map_size=1 # fixme 似乎地图大小固定为1……这样改真的不会出问题吗
+    map_size = 1  # fixme 似乎地图大小固定为1……这样改真的不会出问题吗
     # 生成随机训练数据集(1000000)，验证数据集(1000)
     train_data = VehicleRoutingDataset(args.train_size,
                                        args.num_nodes,
@@ -1294,7 +1307,7 @@ if __name__ == '__main__':
     parser.add_argument('--checkpoint', default=None)
     parser.add_argument('--test', action='store_true', default=False)
     parser.add_argument('--task', default='vrp')
-    parser.add_argument('--nodes', dest='num_nodes', default=50, type=int)  #city数量##############
+    parser.add_argument('--nodes', dest='num_nodes', default=50, type=int)  # city数量##############
     # parser.add_argument('--actor_lr', default=5e-4, type=float)
     # parser.add_argument('--critic_lr', default=5e-4, type=float)
     parser.add_argument('--actor_lr', default=1e-4, type=float)  # 学习率，现在在训练第4epoch，我手动改了一下。……………………
