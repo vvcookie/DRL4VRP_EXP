@@ -463,7 +463,7 @@ class VehicleRoutingDataset(Dataset):
 
     def node_distance2(self, static):
         """
-        和楼上不一样！这个函数需要适用于点到仓库的距离/fixme 记得在切换使用的函数。
+        和楼上不一样！这个函数需要适用于点到仓库的距离
         之前的版本return 的维度是B，num_node+1,num_node.属于是强行在第二个维度的最后面上添加了一个大小为num_node的矩阵……
         所以返回值的[b][-1][i]表示在第b个batch里面，第i个node离最近的仓库的距离。（如果第i是仓库则距离=0）
         """
@@ -734,13 +734,13 @@ class VehicleRoutingDataset(Dataset):
         all_demands = dynamic[:, 1].clone()
         load = torch.gather(all_loads, 1, next_idx.unsqueeze(1))  # 获得batch里每一个样本，下一个节点的load
         demand = torch.gather(all_demands, 1, next_idx.unsqueeze(1))  # 获得batch里每一个样本，下一个节点的demand
-        distance_matrix = distance[:, :-1, :]  # 距离矩阵 todo等等为什么是取到-1啊！！！！【似乎是特殊的含义吗……】
+        n2n_distance = distance
         # 在batch中 - 如果我们下一个点选择访问一个城市：
         if visit.any():
-            diff_distances = distance_matrix[  # fixme 这里距离还要修改
-                torch.arange(distance_matrix.size(0)), current_idx, next_idx.squeeze()].unsqueeze(1)
+            distance = n2n_distance[  #取对应batch的对应两点间的距离值（毕竟只要减去两个点之间的真实距离，无需考虑仓库距离。
+                torch.arange(n2n_distance.size(0)), current_idx, next_idx.squeeze()].unsqueeze(1)
             # 上一次选择的节点与这次选择的节点的差值
-            new_load = torch.clamp(load - demand - diff_distances, min=0)  # fixme ……这个clamp……
+            new_load = torch.clamp(load - demand - distance, min=0)  # fixme ……这个clamp……是什么意思。！！！
             new_demand = torch.clamp(demand - load, min=0)
 
             # 将载重量广播到所有节点，但单独更新需求量
@@ -882,7 +882,7 @@ def render(static, tour_indices, num_depots, save_path):
             if len(idx.size()) == 1:
                 idx = idx.unsqueeze(0)
             idx = idx.expand(static.size(1), -1)
-            print("render function", idx)
+            # print("render function", idx)
             data = torch.gather(static[i].data, 1, idx).cpu().numpy()
             # start = static[i, :, 0].cpu().data.numpy()
             # x = np.hstack((start[0], data[0], start[0]))
@@ -1004,7 +1004,8 @@ class StateCritic(nn.Module):
 
 def validate(data_loader, actor, reward_fn, render_fn=None, save_dir='.',
              num_plot=5, depot_number=-1):
-    """Used to monitor progress on a validation set & optionally plot solution."""
+    """Used to monitor progress on a validation set & optionally plot solution.
+    调用频率是什么来着。"""
     # 将actor设置为评估模式，确保不会应用随机性或梯度计算
     actor.eval()
 
@@ -1209,7 +1210,7 @@ def train(actor, critic, task, num_nodes, train_data, valid_data, reward_fn,
     plt.plot(np.arange(len(all_epoch_reward)), all_epoch_reward)
     plt.title('all_epoch_reward')
     plt.grid(True)
-    plt.show()
+    # plt.show()
 
 
 def train_vrp(args):
@@ -1254,7 +1255,7 @@ def train_vrp(args):
                     DYNAMIC_SIZE,
                     args.hidden_size,
                     car_load,
-                    train_data.update_dynamic,
+                    train_data.update_dynamic2tem,
                     train_data.update_mask2,
                     train_data.node_distance2,
                     args.num_layers,
@@ -1327,8 +1328,8 @@ if __name__ == '__main__':
     args = parser.parse_known_args()[0]  # colab环境跑使用
 
     # --------------------------------------------------------------------
-    args.test = True
-    # args.test = False
+    # args.test = True
+    args.test = False
     # --------------------------------------------------------------------
 
     # print('NOTE: SETTTING CHECKPOINT: ')
@@ -1336,9 +1337,8 @@ if __name__ == '__main__':
     # print(args.checkpoint)
 
     # # 设置checkpoint路径######################################
-    # args.checkpoint = '/content/drive/MyDrive/vrp/100/12_57_12.349803/checkpoints/1' # 这是黎的
-    args.checkpoint = "test4"  # 这是lw的google模型文件夹名
-    args.checkpoint = "trained_model"  # 这是lw的本地文件夹
+    # args.checkpoint = "test4"  # 这是lw的google模型文件夹名
+    # args.checkpoint = "trained_model"  # 这是lw的本地文件夹
     # args.checkpoint ="/content/drive/MyDrive/"
 
     if args.task == 'vrp':
