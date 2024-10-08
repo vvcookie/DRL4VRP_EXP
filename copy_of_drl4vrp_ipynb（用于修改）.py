@@ -474,13 +474,12 @@ class VehicleRoutingDataset(Dataset):
         # depot_positions_expanded = depot_positions.unsqueeze(2).expand(-1, -1, city_positions.size(2), -1)# B,2,num_city, num_depots
         # # 计算每个节点到最近仓库的距离
         # distances_to_depot = torch.sqrt(torch.sum((city_positions.unsqueeze(3) - depot_positions_expanded) ** 2, dim=1))# B,num_city,num_depots
-        # # 取每行最小值，作为每个city节点到最近仓库的距离 fixme 这个应该不用再取最小值了，这行要删掉。
+        # # 取每行最小值，作为每个city节点到最近仓库的距离 这个应该不用再取最小值了，这行要删掉。
         # min_distances, _ = torch.min(distances_to_depot, dim=2) # (B,num_city)
-        # min_distances = torch.cat( # 这一行本意是在前面加上“每个仓库距离最近的仓库（自己）距离为0”的意思） fixme
+        # min_distances = torch.cat( # 这一行本意是在前面加上“每个仓库距离最近的仓库（自己）距离为0”的意思）
         #     (torch.zeros(min_distances.size(0), self.num_depots).to(static.device), min_distances), dim=1)
-        # todo 要在这里写 "每一个city到每一个仓库的距离“矩阵（可以参考上面）【算了别写了】
 
-        # 计算所有节点之间的距离 fixme ？？似乎不用删除。看看mask和update是如何使用的。
+        # 计算所有节点之间的距离
         distances_between_node = torch.sqrt(
             torch.sum((static.unsqueeze(2) - static.unsqueeze(3)) ** 2, dim=1))  # 计算欧式距离
         # distances = torch.cat((distances_between_node, min_distances.unsqueeze(1)), dim=1)
@@ -500,7 +499,7 @@ class VehicleRoutingDataset(Dataset):
         loads = dynamic.data[:, 0]  # (batch_size, seq_len)
         demands = dynamic.data[:, 1]  # (batch_size, seq_len)
         nodedistance = distance + distance[:, -1, :].unsqueeze(1)  # 节点之间的距离加上与最近仓库的距离。
-        nodedistance = nodedistance[:, :-1, :]  # fixme 着什么距离啊……要改。
+        nodedistance = nodedistance[:, :-1, :]  # 第二维度的意思：前面的值是节点之间的距离加上与最近仓库的距离。
 
         # 计算 chosen_idx 到仓库点的距离
         depot_distances = distance[torch.arange(distance.size(0)), chosen_idx.squeeze(1), :self.num_depots]
@@ -574,7 +573,7 @@ class VehicleRoutingDataset(Dataset):
         loads = dynamic.data[:, 0]  # (batch_size, seq_len)
         demands = dynamic.data[:, 1]  # (batch_size, seq_len)
 
-        # fixme 关于距离和需求的处理，要改。==========================
+
         '''
         9.28修改：这里只考虑mask city的逻辑：(就算是影响到仓库也没关系，后续会处理仓库进行覆盖。)
             找到当前的位置，并且取出当前点-所有点的距离+所有点回自己的仓库（已经给了carid）的距离 
@@ -593,7 +592,7 @@ class VehicleRoutingDataset(Dataset):
         # # 将 chosen_distance 的前 self.num_depots 个元素替换为 chosen_idx 到仓库点的距离。 todo 检查。
         # chosen_distance = nodedistance[torch.arange(nodedistance.size(0)), current_idx.squeeze(1)]
         # chosen_distance[:, :self.num_depots] = depot_distances
-        ######################## fixme以上要修改。
+        ########################
 
         # 如果没有剩余的正需求量，我们可以结束行程。
         if demands.eq(0).all():  # 即所有batch的里面，地图里面每一个点都没有需求了：
@@ -646,7 +645,7 @@ class VehicleRoutingDataset(Dataset):
 
     def update_dynamic(self, dynamic, distance, next_idx, current_idx):  # 加了参数：访问的前一个点。
         """
-        用于更新当前地图的dynamic的函数。啊要用到distance是因为dynamic里面的load需要减去距离……todo load-=demand+distance
+        用于更新当前地图的dynamic的函数。啊要用到distance是因为dynamic里面的load需要减去距离……
         """
         # print("update_dynamic:网络预测下一步next_idx 是：\n",next_idx)
         # print("update_dynamic:当前所在位置current_idx 是：\n",current_idx)
@@ -687,7 +686,7 @@ class VehicleRoutingDataset(Dataset):
 
         # depot_visited_idx = is_depot # 找出同时访问城市且上一次访问的是仓库的样本（不用了，需要可以连续访问仓库）
 
-        # 1，原始的visit idx是【数组下标】不是城市序号！！ todo 喂真的是下标吗 不是bool吗
+        # 1，原始的visit idx是【数组下标】不是城市序号！！
         depot_visited_idx = depot_visited_idx.nonzero().squeeze()
 
         # 使用布尔索引和高效的张量操作来更新all_demands
@@ -715,9 +714,10 @@ class VehicleRoutingDataset(Dataset):
 
     def update_dynamic2tem(self, dynamic, distance, next_idx, current_idx):  # 加了参数：访问的前一个点。
         """
-        这是用于更新当前地图的dynamic的函数。啊要用到distance是因为dynamic里面的load需要减去距离……todo load-=demand+distance
-        current_idx：如果飞机离开了仓库，则需要更新仓库demand=-1以标记已经为空。
-        next_idx：本质上我们认为飞机【已经去了】下一个节点 。所以下一个节点的需求、飞机的load也要根据节点类型而更新。
+        这是用于更新当前地图的dynamic的函数。此函数mask规则是只允许访问自己的仓库。
+        要用到distance是因为dynamic里面的load需要减去距离……todo load-=demand+distance
+        current_idx：当前所在的点id（即离开的点）。如果为仓库，则需要更新该点demand=-1以说明已经为空。
+        next_idx：访问的下一个节点。认为【已经去了】 。所以下一个节点的需求、飞机的load要根据节点类型而更新。
         """
         # print("update_dynamic:网络预测下一步next_idx 是：\n",next_idx)
         # print("update_dynamic:当前所在位置current_idx 是：\n",current_idx)
@@ -740,7 +740,7 @@ class VehicleRoutingDataset(Dataset):
             distance = n2n_distance[  #取对应batch的对应两点间的距离值（毕竟只要减去两个点之间的真实距离，无需考虑仓库距离。
                 torch.arange(n2n_distance.size(0)), current_idx, next_idx.squeeze()].unsqueeze(1)
             # 上一次选择的节点与这次选择的节点的差值
-            new_load = torch.clamp(load - demand - distance, min=0)  # fixme ……这个clamp……是什么意思。！！！
+            new_load = torch.clamp(load - demand - distance, min=0) # fixme 有空的话debug这里。
             new_demand = torch.clamp(demand - load, min=0)
 
             # 将载重量广播到所有节点，但单独更新需求量
@@ -748,9 +748,7 @@ class VehicleRoutingDataset(Dataset):
 
             all_loads[visit_idx] = new_load[visit_idx]
             all_demands[visit_idx, next_idx[visit_idx]] = new_demand[visit_idx].view(-1)
-            # all_demands[visit_idx, 0] = -1. + new_load[visit_idx].view(-1) # 改了
 
-        # ----------------测试把上一个访问节点是仓库的时候，条件扩展为"当前访问节点可以是任何点（即允许连续两次访问仓库）
         #  TT终于想起来了：dynamic会标记仓库是非空（-1空、0非空），所以update的时候，如果无人机离开仓库（当前点=仓库），就要更新该仓库demand
         #  注意，本质上我们认为飞机【已经去了】下一个节点 next_idx。所以下一个节点的需求、飞机的load也要根据节点类型而更新。
         # 使用布尔索引来找出当前节点的是仓库的样本
@@ -765,14 +763,15 @@ class VehicleRoutingDataset(Dataset):
             depot_visited_idx]] = -1.  # + new_load[depot_visited_idx].reshape(-1,2)
         # -------------------------
 
-        # 在batch中 - 如果我们下一个选择访问一个仓库
+        # 在batch中 - 如果我们下一个选择访问一个仓库，则load回满，仓库的deman标记为0
         # if depot.any():
         #     all_loads[depot.nonzero().squeeze()] = 1.
         #     all_demands[depot.nonzero().squeeze(), 0] = 0.
         if depot.any():
-            all_loads[depot.nonzero().squeeze()] = float(self.car_load)  # todo 检查这个car load的意思
+            all_loads[depot.nonzero().squeeze()] = float(self.car_load)  # todo 检查这个car load的意思。修改carload后
             all_demands[depot.squeeze(), next_idx[depot.squeeze()]] = 0.
 
+        # 把load和demand拼接会dynamic
         new_dynamic = torch.cat((all_loads.unsqueeze(1), all_demands.unsqueeze(1)), 1)
         return new_dynamic.clone().detach().to(device=dynamic.device)  # 避免额外的计算开销和不必要的内存使用
 
@@ -797,7 +796,6 @@ def reward(static, tour_indices, depot_number):  # 这个是旧的reward，,depo
 
         # 确保我们总是返回到仓库 - 注意额外的 concat
         # 不会增加任何额外的损失，因为连续点之间的欧几里得距离是 0
-
         # start = static.data[:, :, 0].unsqueeze(1) # 取消了在开头结尾补充仓库。结尾一定有仓库，开头的仓库需要手动添加。！！！！！
         # y = torch.cat((start, tour, start), dim=1)
 
@@ -813,17 +811,15 @@ def reward(static, tour_indices, depot_number):  # 这个是旧的reward，,depo
 
     # 将列表中的所有元素堆叠成一个新的张量
     total_len_tensor = torch.stack(total_len)
-    # print(total_len_tensor)
     # 计算所有旅行的总长度之和
     total_distance = total_len_tensor.sum(0)
-    # print("____________reward",total_distance)
-
     return total_distance
 
 
-def reward2(static, tour_indices, depot_number):
+def reward2_penalty(static, tour_indices, depot_number):
     """
-    根据 tour_indices 给出的所有城市/节点之间的欧几里得距离
+    暂未启用。
+    根据 tour_indices 给出的所有城市/节点之间的欧几里得距离.和原始reward不同的是加上了回仓库次数的惩罚
 
     参数:
     static: 包含所有城市/节点位置的静态信息张量。
@@ -1053,13 +1049,18 @@ def train(actor, critic, task, num_nodes, train_data, valid_data, reward_fn,
     # 搭建主要的AC网络，进行全部的训练
     """Constructs the main actor & critic networks, and performs all training."""
     # 时间，保存路径获取
-    google_drive_path = '/content/drive/MyDrive/'
-    now = '%s' % datetime.datetime.now().time()
-    now = now.replace(':', '_')
-    save_dir = os.path.join(task, '%d' % num_nodes, now)
-    # 判断是否有checkpoint
-    checkpoint_dir = os.path.join(save_dir, 'checkpoints')
-    checkpoint_dir = os.path.join(google_drive_path, checkpoint_dir)  # ！！！！！！！！！把路径设置成了谷歌硬盘的路径。
+    #google_drive_path = '/content/drive/MyDrive/' # 这都什么啊居然是绝对路径。
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    # now = '%s' % datetime.datetime.now().time()
+    # now = '%s' % datetime.datetime.now()
+    # now = now.replace(':', '_')
+    now=datetime.datetime.now()
+    format_now='%s' % now.month+"_"+'%s' % now.day+"_"+'%s' % now.hour+"_"+'%s' % now.minute+"_"+'%s'%now.second
+
+    save_dir = os.path.join(current_dir,task+"_train_log", '%d' % num_nodes, format_now) # ./vrp/numnode/time
+    # 创建能够保存训练中checkpoint的文件夹
+    checkpoint_dir = os.path.join(save_dir, 'train_checkpoints') # /vrp/numnode/time/checkpoints
+    # checkpoint_dir = os.path.join(google_drive_path, checkpoint_dir) #./vrp/numnode/time//checkpoints
     if not os.path.exists(checkpoint_dir):
         os.makedirs(checkpoint_dir)
     # 定义AC优化器
@@ -1158,6 +1159,7 @@ def train(actor, critic, task, num_nodes, train_data, valid_data, reward_fn,
         # 绘制所有epoch的loss和reward
         all_epoch_loss.extend(averages_loss)
         all_epoch_reward.extend(averages_reward)
+        # 取消每epoch画图了……移动到train完最后画图。
         # plt.figure(3)
         # plt.plot(np.arange(len(all_epoch_loss)), all_epoch_loss)
         # plt.title('all_epoch_loss')
@@ -1172,24 +1174,25 @@ def train(actor, critic, task, num_nodes, train_data, valid_data, reward_fn,
         mean_reward = np.mean(rewards)
 
         # Save the weights
-        epoch_dir = os.path.join(checkpoint_dir, '%s' % epoch)
+        epoch_dir = os.path.join(checkpoint_dir, '%s' % epoch) #./vrp_numnode_time//checkpoints/0
         if not os.path.exists(epoch_dir):
             os.makedirs(epoch_dir)
 
-        save_path = os.path.join(epoch_dir, 'actor.pt')
+        save_path = os.path.join(epoch_dir, 'actor.pt')#./vrp_numnode_time//checkpoints/0/actor.pt
         torch.save(actor.state_dict(), save_path)
 
-        save_path = os.path.join(epoch_dir, 'critic.pt')
+        save_path = os.path.join(epoch_dir, 'critic.pt')#./ vrp_numnode_time//checkpoints/0/critic.pt
         torch.save(critic.state_dict(), save_path)
 
         # Save rendering of validation set tours(把验证集数据放入validation中，主要获得索引并且绘图)
-        valid_dir = os.path.join(save_dir, '%s' % epoch)
+        valid_dir = os.path.join(save_dir, "valid_picture",'%s' % epoch) #/vrp_numnode_time/0
 
+        # 每一个epoch validate一次。
         mean_valid = validate(valid_loader, actor, reward_fn, render_fn,
                               valid_dir, num_plot=5, depot_number=depot_num)
 
-        # Save best model parameters(保存最佳奖励)
-        if mean_valid < best_reward:
+        # Save best model parameters(保存最佳奖励) 是每个epoch检查
+        if mean_valid < best_reward: # reward 就是路程总长度todo 【暂定无惩罚项】
             best_reward = mean_valid
 
             save_path = os.path.join(save_dir, 'actor.pt')
@@ -1279,9 +1282,11 @@ def train_vrp(args):
 
         path = os.path.join(args.checkpoint, 'critic.pt')
         critic.load_state_dict(torch.load(path, device))  # 加载模型参数
+    else:
+        print("No args.checkpoint：模型从0初始化。")
 
     if not args.test:
-        print("not args.test：模型开始训练")
+        print("No args.test：模型开始训练")
         train(actor, critic, **kwargs)  # 训练！!!!!!!!!!!!!!!!!!!!!
 
     # 生成测试数据，大小于验证数据一致(1000)
@@ -1333,12 +1338,9 @@ if __name__ == '__main__':
     # --------------------------------------------------------------------
 
     # print('NOTE: SETTTING CHECKPOINT: ')
-    # args.checkpoint = os.path.join('vrp', '10', '12_59_47.350165' + os.path.sep)
-    # print(args.checkpoint)
-
     # # 设置checkpoint路径######################################
     # args.checkpoint = "test4"  # 这是lw的google模型文件夹名
-    # args.checkpoint = "trained_model"  # 这是lw的本地文件夹
+    args.checkpoint = "trained_model"  # 这是lw的本地文件夹
     # args.checkpoint ="/content/drive/MyDrive/"
 
     if args.task == 'vrp':
