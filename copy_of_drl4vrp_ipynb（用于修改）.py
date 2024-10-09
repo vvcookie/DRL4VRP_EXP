@@ -189,7 +189,6 @@ class DRL4TSP(nn.Module):
 
     def forward(self, static, dynamic, decoder_input=None,
                 last_hh=None):  ##########################################################
-        # todo 删掉 init depot
         """
         Parameters
         ----------
@@ -211,8 +210,7 @@ class DRL4TSP(nn.Module):
         batch_size, input_size, sequence_size = static.size()
         distance = self.node_distance_fn(static)  # (B,num_node+1,num_node) # 有一个+1是因为最后一个
         if decoder_input is None:
-            print(
-                "DRL4TSP decoder input is None===================================================!\nself.x0=\n")
+            raise ValueError("DRL4TSP decoder input is None!")
 
         # 获取仓库数量===================================
         num_car = len(decoder_input[0][0])
@@ -225,7 +223,6 @@ class DRL4TSP(nn.Module):
         car_id = 0
         # car_load=[torch.ones(batch_size) for i in range(num_car)] #?????????应该要改成batch size大小的元素吧
         car_load = [torch.full((batch_size,), self.car_load) for _ in range(num_car)]
-        # todo =====================================
 
         # Structures for holding the output sequences
         # tour_idx, tour_logp = [], [] # 最终的访问序列。
@@ -240,7 +237,6 @@ class DRL4TSP(nn.Module):
         # 给每个无人机tour里记录初始仓库。
         tour_idx = [[torch.tensor(initial_depot[i][0]).unsqueeze(1).to(device)] for i in
                     range(num_car)]  # num_car, 1, batch_size
-        # fixme=========================================
 
         # ptr=torch.tensor(tour_idx[0][-1])  #ptr 大小B 1。ptr更新！！！更新为下一个无人机的当前位置。
         ptr = tour_idx[0][-1].clone().detach()  # 当前第0辆无人机的位置。从第一辆无人机开始，取最后一个（其实只有一个元素）所在下标。（维度是batchsiz吗？？）
@@ -301,11 +297,10 @@ class DRL4TSP(nn.Module):
                 dynamic = self.update_fn(dynamic, distance, ptr.data,
                                          last_visited)  # B 2 L 这里还是【当前小车】的load和当前小车的新一步ptr，更新地图里的load和demand
 
-                # fixme 新增=========================dynamic中的旧load储存，更新新load。所以此后dynamic都是当前无人机访问下一个点后的新环境
+                # 新增===dynamic中的旧load储存，更新新load。所以此后dynamic都是当前无人机访问下一个点后的新环境
                 car_load[car_id] = dynamic[:, 0, 0].clone()  # 随便取第一个仓库的load就好了，存到car_load数组里面。
                 dynamic[:, 0] = car_load[(car_id + 1) % num_car].unsqueeze(1).expand(-1,
                                                                                      num_nodes)  # 替换dynamic里的load！把load换成下一个无人机的load，但demand继承。
-                # fixme =========================
 
                 dynamic_hidden = self.dynamic_encoder(dynamic)  # 得到当前无人机新访问一个点之后的动态环境的hidden
 
@@ -362,7 +357,7 @@ from torch.utils.data import Dataset
 from torch.autograd import Variable
 import matplotlib
 
-# matplotlib.use('Agg')  # 防止尝试使用图形界面，允许在没有图形界面的环境中运行 todo ……如果使用谷歌请取消注释
+matplotlib.use('Agg')  # 防止尝试使用图形界面，允许在没有图形界面的环境中运行。如果使用谷歌请取消注释
 import matplotlib.pyplot as plt
 
 
@@ -394,7 +389,7 @@ class VehicleRoutingDataset(Dataset):
         # 修改位置生成逻辑以支持多仓库地图
         # locations = torch.rand((num_samples, 2, input_size + 1))
         self.static = torch.rand((num_samples, 2, num_city + self.num_depots))  # 需要生成飞机数量+city数量个节点（前面的是飞机）
-        self.car_load = car_load
+        self.car_load = car_load # todo？
 
         # 所有状态都将广播司机当前的载重量
         # 注意，我们只在 [0, 1] 范围内使用载重量，以防止大数字输入神经网络
@@ -427,7 +422,7 @@ class VehicleRoutingDataset(Dataset):
         # 生成一个介于0和self.num_depots-1之间的随机索引
         # start_idx = torch.randint(0, self.num_depots, (1,)).item()
         start_idx = torch.arange(0, self.num_depots)  # 0到self.num_depots-1顺序序列，（顺序分配仓库）#????什么意思啊
-        return (self.static[idx], self.dynamic[idx], self.static[idx, :, :self.num_depots])  # ????什么意思啊
+        return self.static[idx], self.dynamic[idx], self.static[idx, :, :self.num_depots]  # ????什么意思啊
         # return (self.static[idx], self.dynamic[idx], self.static[idx, :, 0:1]) # 最后一个变量是仓库。需要改
 
     def node_distance(self, static):
@@ -613,14 +608,15 @@ class VehicleRoutingDataset(Dataset):
                 #     #new_mask[sample_idx, :self.num_depots] = 1.
                 #     new_mask[sample_idx * torch.ones_like(demands[sample_idx], dtype=torch.long), demands[sample_idx] != 0] = 1.
 
-        # 判断是否存在某一行的mask全为0#################### todo 这个是打底的补丁，先注释掉看看之后会不会引起异常报错
+        # 判断是否存在某一行的mask全为0####################
         all_zero_mask = (new_mask == 0).all(dim=1)
         if all_zero_mask.any():
+            # 以下是打底的补丁，先注释掉看看不要补丁会不会引起异常报错
             # 找到全为0的行的索引
             # all_zero_indices = all_zero_mask.nonzero(as_tuple=True)[0]
             # 将这些行中chosen_idx对应位置的mask设为1
             # new_mask[all_zero_indices, chosen_idx[all_zero_indices]] = 1
-            print("error:存在某一行的mask全为0-------------------------------")
+            raise ValueError("error:存在某一行的mask全为0")
 
         return new_mask.float()
 
@@ -682,8 +678,8 @@ class VehicleRoutingDataset(Dataset):
         #     all_loads[depot.nonzero().squeeze()] = 1.
         #     all_demands[depot.nonzero().squeeze(), 0] = 0.
         if depot.any():
-            # all_loads[depot.nonzero().squeeze()] = float(self.max_load)#fixme load值
-            all_loads[depot.nonzero().squeeze()] = float(self.car_load)
+            # all_loads[depot.nonzero().squeeze()] = float(self.max_load)
+            all_loads[depot.nonzero().squeeze()] = float(self.car_load)#fixme load值
             depot_indices = next_idx[depot.squeeze()]
             all_demands[depot.squeeze(), depot_indices] = 0.
 
@@ -695,19 +691,15 @@ class VehicleRoutingDataset(Dataset):
     def update_dynamic2tem(self, dynamic, distance, next_idx, current_idx):  # 加了参数：访问的前一个点。
         """
         这是用于更新当前地图的dynamic的函数。此函数mask规则是只允许访问自己的仓库。
-        要用到distance是因为dynamic里面的load需要减去距离……todo load-=demand+distance
+        要用到distance是因为dynamic里面的load需要减去距离……
         current_idx：当前所在的点id（即离开的点）。如果为仓库，则需要更新该点demand=-1以说明已经为空。
         next_idx：访问的下一个节点。认为【已经去了】 。所以下一个节点的需求、飞机的load要根据节点类型而更新。
         """
-        # print("update_dynamic:网络预测下一步next_idx 是：\n",next_idx)
-        # print("update_dynamic:当前所在位置current_idx 是：\n",current_idx)
 
         current_idx = current_idx.squeeze()
         # 根据【下一个节点】是访问仓库还是城市，以不同方式更新dynamic
-        ##############################
         visit = next_idx.ge(self.num_depots)  # 下一个节点访问的是城市还是仓库
         depot = next_idx.lt(self.num_depots)
-        ##############################
 
         # 克隆动态变量，以免破坏图
         all_loads = dynamic[:, 0].clone()
@@ -747,7 +739,6 @@ class VehicleRoutingDataset(Dataset):
         # all_demands[depot_visited_idx.to('cuda'), last_visited.to('cuda')[depot_visited_idx]] = -1. #+ new_load[depot_visited_idx].reshape(-1,2)
         all_demands[depot_visited_idx.to(dynamic.device), current_idx.to(dynamic.device)[
             depot_visited_idx]] = -1.  # + new_load[depot_visited_idx].reshape(-1,2)
-        # -------------------------
 
         # 在batch中 - 如果我们下一个选择访问一个仓库，则load回满，仓库的deman标记为0
         # if depot.any():
@@ -762,7 +753,7 @@ class VehicleRoutingDataset(Dataset):
         return new_dynamic.clone().detach().to(device=dynamic.device)  # 避免额外的计算开销和不必要的内存使用
 
 
-def reward(static, tour_indices, depot_number):  # 这个是旧的reward，,depot_number参数没用
+def reward(static, tour_indices):  # 这个是旧的reward，,depot_number参数没用
     """
     根据 tour_indices 给出的所有城市/节点之间的欧几里得距离
 
@@ -1012,7 +1003,7 @@ def validate(data_loader, actor, reward_fn, render_fn=None, save_dir='.',
             tour_indices, _ = actor.forward(static, dynamic, x0)
 
         # 使用vrp奖励函数 reward_fn 计算预测的旅游索引的奖励。取奖励的均值，并使用 item() 提取标量值，添加答rewards列表中
-        reward = reward_fn(static, tour_indices, depot_number).mean().item()
+        reward = reward_fn(static, tour_indices).mean().item()
         rewards.append(reward)
         # 控制vrp的渲染函数，主要是于作图有关
         if render_fn is not None and batch_idx < num_plot:
@@ -1049,7 +1040,6 @@ def train(actor, critic, task, num_nodes, train_data, valid_data, reward_fn,
     train_loader = DataLoader(train_data, batch_size, True, num_workers=0)  # 读取训练数据，一次读取batch_size个，无序
     valid_loader = DataLoader(valid_data, batch_size, False, num_workers=0)  # 读取测试数据，一次读取batch_size个，有序
 
-    best_params = None
     best_reward = np.inf  # 正无穷大
     all_epoch_loss, all_epoch_reward = [], []
     for epoch in range(5):  # 执行20轮训练 fixme!!!!!!!!
@@ -1076,7 +1066,7 @@ def train(actor, critic, task, num_nodes, train_data, valid_data, reward_fn,
             tour_indices, tour_logp = actor(static, dynamic, x0)
 
             # Sum the log probabilities for each city in the tour(每个城市的对数几率和，作为真实奖励值)
-            reward = reward_fn(static, tour_indices, depot_num)
+            reward = reward_fn(static, tour_indices)
 
             # Query the critic for an estimate of the reward(向评论家询问奖励的估计值)
             critic_est = critic(static, dynamic).view(-1)
@@ -1161,14 +1151,14 @@ def train(actor, critic, task, num_nodes, train_data, valid_data, reward_fn,
         torch.save(critic.state_dict(), critic_save_path)
 
         # Save rendering of validation set tours(把验证集数据放入validation中，主要获得索引并且绘图)
-        valid_dir = os.path.join(save_dir, "valid_picture", '%s' % epoch) #/vrp_numnode_time/0
+        # valid_dir = os.path.join(save_dir, "valid_picture", '%s' % epoch) #/vrp_numnode_time/0
         valid_dir = os.path.join(save_dir, "valid_picture")# test去掉后面的epoch
 
         # 每一个epoch validate一次。
         mean_valid = validate(valid_loader, actor, reward_fn, render_fn,
-                              valid_dir, num_plot=5, depot_number=depot_num) # fixme 为什么debug这里会弹出5次图像。
+                              valid_dir, num_plot=5, depot_number=depot_num)
         # Save best model parameters(保存最佳奖励) 是每个epoch检查!!!使用valid set的reward来选！！！
-        if mean_valid < best_reward: # reward 就是路程总长度todo 【暂定无惩罚项】(好像确实不需要额外的乘法）
+        if mean_valid < best_reward: # reward 就是路程总长度。暂定无惩罚项(好像确实不需要额外的乘法）
             best_reward = mean_valid
 
             actor_save_path = os.path.join(save_dir, 'actor.pt')
@@ -1190,7 +1180,7 @@ def train(actor, critic, task, num_nodes, train_data, valid_data, reward_fn,
     plt.title('All_epoch_loss')
     plt.grid(True)
     plt.savefig(os.path.join(save_dir,"All_epoch_loss.jpg"))
-    # plt.show()
+    plt.show()
 
     plt.figure(4)
     plt.plot(np.arange(len(all_epoch_reward)), all_epoch_reward)
@@ -1198,7 +1188,7 @@ def train(actor, critic, task, num_nodes, train_data, valid_data, reward_fn,
     plt.title('All_epoch_reward')
     plt.grid(True)
     plt.savefig(os.path.join(save_dir, "All_epoch_reward.jpg"))
-    # plt.show()
+    plt.show()
 
 
 def train_vrp(args):
