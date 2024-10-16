@@ -262,8 +262,7 @@ class DRL4TSP(nn.Module):
             decoder_hidden = self.decoder(decoder_input)  # 编码当前位置xy静态信息
 
             # 指针网络。里面包含GRU
-            probs, last_hh = self.pointer(static_hidden, dynamic_hidden, decoder_hidden,
-                                          last_hh)  # 得到下一个点的（未mask）概率分布和隐状态。
+            probs, last_hh = self.pointer(static_hidden, dynamic_hidden, decoder_hidden,last_hh)  # 得到下一个点的（未mask）概率分布和隐状态。
             probs = F.softmax(probs + mask.log(), dim=1)  # mask操作+softmax
 
             # When training, sample the next step according to its probability.
@@ -361,7 +360,7 @@ import matplotlib.pyplot as plt
 
 
 class VehicleRoutingDataset(Dataset):
-    def __init__(self, num_samples, num_city, max_load=10, car_load=0, max_demand=1, seed=None,
+    def __init__(self, num_samples, num_city, max_load=10, car_load=0., max_demand=1., seed=None,
                  num_depots=-1):  # 增加了 num_depots参数 ###
         super(VehicleRoutingDataset, self).__init__()
 
@@ -402,9 +401,9 @@ class VehicleRoutingDataset(Dataset):
         # 所有状态都有自己的固有需求量，在 [1, max_demand) 范围内，
         # 然后根据最大载重量进行缩放。例如，如果 load=10 且 max_demand=30，
         # 需求量将缩放到 (0, 3) 范围内
-        # demands = torch.randint(1, self.max_demand + 1, dynamic_shape)  # todo 是否要把这里的demand改成相同的？？？？？？
-        # demands = demands / float(self.max_load)  # todo 取消归一化。
-        demands=torch.full(dynamic_shape, self.max_demand)
+        # demands = torch.randint(1, self.max_demand + 1, dynamic_shape)
+        # demands = demands / float(self.max_load)  # 取消归一化。
+        demands=torch.full(dynamic_shape, self.max_demand) # todo 这里写成固定的。是否要把这里的demand改成不同的？
 
         # 设置仓库的需求量为 0
         for depot_idx in range(self.num_depots):
@@ -423,7 +422,7 @@ class VehicleRoutingDataset(Dataset):
         # 返回 (静态信息, 动态信息, 起始位置) # 现在新增加了返回仓库的下标！！！
         # 生成一个介于0和self.num_depots-1之间的随机索引
         # start_idx = torch.randint(0, self.num_depots, (1,)).item()
-        start_idx = torch.arange(0, self.num_depots)  # 0到self.num_depots-1顺序序列，（顺序分配仓库）#????什么意思啊
+        start_idx = torch.arange(0, self.num_depots)  # 0到self.num_depots-1顺序序列，（顺序分配仓库）
         return self.static[idx], self.dynamic[idx], self.static[idx, :, :self.num_depots]  # ????什么意思啊
         # return (self.static[idx], self.dynamic[idx], self.static[idx, :, 0:1]) # 最后一个变量是仓库。需要改
 
@@ -686,7 +685,7 @@ class VehicleRoutingDataset(Dataset):
         #     all_demands[depot.nonzero().squeeze(), 0] = 0.
         if depot.any():
             # all_loads[depot.nonzero().squeeze()] = float(self.max_load)
-            all_loads[depot.nonzero().squeeze()] = float(self.car_load)#fixme load值
+            all_loads[depot.nonzero().squeeze()] = float(self.car_load)
             depot_indices = next_idx[depot.squeeze()]
             all_demands[depot.squeeze(), depot_indices] = 0.
 
@@ -1024,7 +1023,7 @@ def validate(data_loader, actor, reward_fn, render_fn=None, save_dir='.',
     actor.train()
     # 返回平均奖励
     # print(f"RL variance: {np.var(rewards,dtype=np.float64)}")
-    analysis.reward_RL=rewards # fixme ……不能这样。这是按照batch来的……
+    analysis.reward_RL=rewards
     return np.mean(rewards)
 
 
@@ -1054,7 +1053,7 @@ def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
 
     best_reward = np.inf  # 正无穷大
     all_epoch_loss, all_epoch_reward = [], []
-    for epoch in range(20):  # 执行20轮训练 fixme!!!!!!!!
+    for epoch in range(20):  # 执行20轮训练 fixme!!!!!!!!能不能把这个写到外面。
 
         actor.train()
         critic.train()
@@ -1213,7 +1212,7 @@ def train_vrp(args):
 
     # Determines the maximum amount of load for a vehicle based on num nodes
     LOAD_DICT = {10: 20, 20: 30, 30: 35, 50: 40, 100: 50, 200: 80}  # todo 以后改
-    # MAX_DEMAND = 1 # fixme 怎么都写成1了！！！……【是不是可以去掉随机来着。】
+    # MAX_DEMAND = 1
     STATIC_SIZE = 2  # (x, y)
     DYNAMIC_SIZE = 2  # (load, demand)
     max_load = LOAD_DICT[args.num_city] # todo没事现在maxload已经废弃了
@@ -1221,7 +1220,7 @@ def train_vrp(args):
 
     map_size = 1  # fixme 原代码地图大小默认1，不需要指定。而且本来产生坐标的时候就是0-1范围的浮点。
     car_load = 2 * map_size * 1.4  # 测试
-    MAX_DEMAND= 0.1 # 测试
+    MAX_DEMAND= 0.1 # 测试 # todo 目前是固定值。
     # 生成随机训练数据集(1000000)，验证数据集(1000)
     train_data = VehicleRoutingDataset(args.train_size,
                                        args.num_city,
@@ -1280,7 +1279,7 @@ def train_vrp(args):
         print("训练结束。")
     print(f"args.valid_size={args.valid_size}")
     print("Test:")
-    # 生成测试数据，大小于验证数据一致(1000) # todo 对齐这个测试数据集大小的数据产生。和validate一样啊
+    # 生成测试数据，大小于验证数据一致(1000)
     test_data = VehicleRoutingDataset(args.valid_size,
                                       args.num_city,
                                       max_load,
@@ -1317,7 +1316,7 @@ if __name__ == '__main__':
     parser.add_argument('--hidden', dest='hidden_size', default=128, type=int)
     parser.add_argument('--dropout', default=0.1, type=float)
     parser.add_argument('--layers', dest='num_layers', default=1, type=int)
-    # parser.add_argument('--train-size',default=1000000, type=int)#fixme!!!!!!!!!!!!
+    # parser.add_argument('--train-size',default=1000000, type=int) #fixme!!!!!!!!!!!!
     parser.add_argument('--train-size', default=10, type=int)  # fixme!!!!!!!!!!!!####################
     parser.add_argument('--valid-size', default=1000, type=int)
     parser.add_argument('--depot_num', default=5, type=int)  # todo ###############
@@ -1330,10 +1329,17 @@ if __name__ == '__main__':
     # args.test = False
     # --------------------------------------------------------------------
     # # 设置checkpoint路径
+    # args.checkpoint ="/content/drive/MyDrive/"
     # args.checkpoint = "test4"  # 这是lw的google模型文件夹名
     args.checkpoint = "trained_model"  # 这是lw的本地文件夹 todo ………………重新开始训练。
-    # args.checkpoint ="/content/drive/MyDrive/"
-    # todo 对齐：怎么把坐标统一起来。
+
+
+    # todo：测试泛化性。和更多方法比较
+    # todo: 重构代码。和贪心能够一键对齐
+    # todo:  抢夺决策
+    # todo:  共享仓库
+    # todo:  随机事件（这个太难写了）
+
 
     if args.task == 'vrp':
         train_vrp(args)

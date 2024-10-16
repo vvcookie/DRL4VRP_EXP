@@ -6,6 +6,10 @@ class Reward_Collect:
         self.reward_greedy=[]
         self.reward_RL=[]
 
+    def get_mean(self):
+        print(f"Greedy reward mean: {np.mean(self.reward_greedy)}")
+        print(f"RL reward mean: {np.mean(self.reward_RL)}")
+
     def get_min_max(self):
         print(f"Greedy reward range: [{min(self.reward_greedy)},{max(self.reward_greedy)}]")
         print(f"RL reward range: [{min(self.reward_RL)},{max(self.reward_RL)}]")
@@ -59,7 +63,6 @@ class Reward_Collect:
 
     def save_reward(self,path):
         txt="Greedy,RL\n"
-        print(self.reward_greedy,self.reward_RL)
         for greedy,RL in zip(self.reward_greedy,self.reward_RL):
             txt+=f"{greedy},{RL}\n"
         with open(path,"w") as f:
@@ -72,6 +75,7 @@ class Reward_Collect:
             raise ValueError(f"RL reward length={len(self.reward_RL)}\n"
               f"Greedy reward length={len(self.reward_greedy)} is not equal!")
 
+        self.get_mean()
         self.get_min_max()
         self.get_variance()
         self.independent_T_test()
