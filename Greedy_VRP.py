@@ -1,21 +1,20 @@
-# 哇别再手写了吧。明明有gpt可以搞定的事情。
 # todo :可能demand不相等才是能拉开贪心和RL的设定吗！！
 import random
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-from typing_extensions import runtime
 
 
 # from PyQt5.QtGui.QTextCursor import position
 
-def DRL4VRP_Problem(tower_num, uav_num, position,tower_position):
+def DRL4VRP_Problem(tower_num, uav_num, position):
     map_size = 1  # 这是边长。100*100.能量需要2*√2 *100=280
     max_energy = 2 *  map_size * 1.4  # 为了保证一定能够飞到最远端。 # todo 对齐1
     tower_need=0.1 # todo 暂定是0.1。对齐1
 
     # 创建地图.前uav_num个是给无人机仓库用的
     # position = [[random.randint(0, map_size), random.randint(0, map_size)] for _ in range(point_num)]
+    tower_position = position[uav_num:]
 
     visited_tower = [False] * tower_num  # 标记是否访问过。todo  以后可以用visited来存放demand的值。
     tower_position_mask = np.array(tower_position, dtype=float)
@@ -147,7 +146,6 @@ def DRL4VRP_Problem(tower_num, uav_num, position,tower_position):
             nearest_index = np.argmin(dis_total)
             return nearest_index, dis_list_go[nearest_index], dis_list_back[nearest_index],tower_demand[nearest_index]
 
-
     # todo 当前贪心版本：
     #   多无人机：否
     #   是否只能回到自己仓库：是
@@ -218,7 +216,7 @@ def DRL4VRP_Problem(tower_num, uav_num, position,tower_position):
 
         # print(f"total distance:{total_dis}")
 
-        # plot_track(all_track) # 画出动态图。
+        # plot_track(all_track) # 画出本地图的动态图。
 
         return total_dis
 
@@ -228,7 +226,12 @@ def DRL4VRP_Problem(tower_num, uav_num, position,tower_position):
 
 
 def run_greedy_VRP(position_set,tower_n,uav_n):
+    '''
+    run_greedy_VRP 适用与一次性运行n个贪心算法VRP问题实例。
+    position_set: 为多个地图的集合。
+    '''
     print("Run greedy:")
+    print(f"uav number:{uav_n}")
 
     # tower_n = 50  # 电塔的数量 #
     # uav_n = 5  # 飞机数量
@@ -241,21 +244,17 @@ def run_greedy_VRP(position_set,tower_n,uav_n):
     for t in range(run_times):
         position = position_set[t]  # 使用外界传进来的坐标
 
-        tower_position_ = position[uav_n:]
-
-        reward = DRL4VRP_Problem(tower_n, uav_n, position, tower_position_)
+        reward = DRL4VRP_Problem(tower_n, uav_n, position)
         reward_set.append(reward)
 
     average_reward = sum(reward_set) / run_times
     print(f"Run {run_times} times. Average tour length:  {average_reward}")
     return reward_set
-    # variance_reward=np.var(reward_set,dtype=np. float64)
-    # print(f"Variance: {variance_reward}")
 
 if __name__ == "__main__":
-    run_times=10
-    tower_n=50
-    uav_n=5
+    run_times=1000
+    tower_n=100
+    uav_n=10
     #     # seed = 3
     #     # random.seed(seed)
     position_set = np.random.random(size=(run_times, 2, tower_n + uav_n))

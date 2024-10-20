@@ -9,14 +9,20 @@ class Reward_Collect:
     def get_mean(self):
         print(f"Greedy reward mean: {np.mean(self.reward_greedy)}")
         print(f"RL reward mean: {np.mean(self.reward_RL)}")
+        print("")
+
 
     def get_min_max(self):
         print(f"Greedy reward range: [{min(self.reward_greedy)},{max(self.reward_greedy)}]")
         print(f"RL reward range: [{min(self.reward_RL)},{max(self.reward_RL)}]")
+        print("")
+
 
     def get_variance(self):
         print(f"Greedy variance {np.var(self.reward_greedy,dtype=np.float64)}")
         print(f"RL variance {np.var(self.reward_RL,dtype=np.float64)}")
+        print("")
+
 
     def independent_T_test(self):
         # 独立2个样本t检验
@@ -26,6 +32,8 @@ class Reward_Collect:
         print("独立样本t检验")
         # print("statistic:", r.__getattribute__("statistic"))
         print("pvalue:", r.__getattribute__("pvalue"))
+        print("")
+
 
     def paired_T_test(self):
         '''
@@ -37,6 +45,8 @@ class Reward_Collect:
         print("成对样本t检验")
         # print("statistic:", r.__getattribute__("statistic"))
         print("pvalue:", r.__getattribute__("pvalue"))
+        print("")
+
 
     def wilcoxon_rank_sum_test(self):
         """
@@ -49,6 +59,8 @@ class Reward_Collect:
         print("wilcoxon_rank_sum_test")
         # print("statistic:", res.__getattribute__("statistic"))
         print("pvalue:", res.__getattribute__("pvalue"))
+        print("")
+
 
     def wilcoxon_signed_rank_test(self):
         '''
@@ -60,6 +72,7 @@ class Reward_Collect:
         print("wilcoxon_signed_rank_test")
         # print("statistic:", res.__getattribute__("statistic"))
         print("pvalue:", res.__getattribute__("pvalue"))
+        print("")
 
     def save_reward(self,path):
         txt="Greedy,RL\n"
