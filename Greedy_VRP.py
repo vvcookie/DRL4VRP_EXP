@@ -230,11 +230,9 @@ def run_greedy_VRP(position_set,tower_n,uav_n):
     run_greedy_VRP 适用与一次性运行n个贪心算法VRP问题实例。
     position_set: 为多个地图的集合。
     '''
-    print("Run greedy:")
-    print(f"uav number:{uav_n}")
+    # print("Run greedy:")
+    # print(f"uav number:{uav_n}")
 
-    # tower_n = 50  # 电塔的数量 #
-    # uav_n = 5  # 飞机数量
     reward_set = []
     if type(position_set) is not np.ndarray:
         position_set=position_set.numpy()
@@ -248,21 +246,58 @@ def run_greedy_VRP(position_set,tower_n,uav_n):
         reward_set.append(reward)
 
     average_reward = sum(reward_set) / run_times
-    print(f"Run {run_times} times. Average tour length:  {average_reward}")
+    # print(f"Run {run_times} times. Average tour length:  {average_reward}")
     return reward_set
+
+def draw_path_change():
+    '''
+    飞机数量1-10，电塔是飞机数量20倍。
+    '''
+    run_times=1000
+    uav_n=5
+    y_avg_reward = []
+    for uav_n in range(1, 11):
+        tower_n = 20 * uav_n # 电塔数量是飞机数量20倍。
+        position_set = np.random.random(size=(run_times, 2, tower_n + uav_n))
+        reward_set = run_greedy_VRP(position_set, tower_n, uav_n)
+        # print(f"Run {run_times} times. Average tour length:  {np.mean(reward_set)}")
+        y_avg_reward.append(np.mean(reward_set))
+    plt.plot(list(range(1,10)),y_avg_reward)
+    plt.show()
+
+def draw_uav_change():
+    '''
+    电塔数量固定，看飞机数量的影响
+    '''
+    run_times=500
+    tower_n = 300 # 电塔数量是飞机数量20倍。
+    y_avg_reward = []
+    uav_n_lb=2
+    uav_n_ub=15
+    for uav_n in range(uav_n_lb, uav_n_ub):
+        position_set = np.random.random(size=(run_times, 2, tower_n + uav_n))
+        reward_set = run_greedy_VRP(position_set, tower_n, uav_n)
+        print(f"Run {run_times} times. Average tour length:  {np.mean(reward_set)}")
+        y_avg_reward.append(np.mean(reward_set))
+    plt.plot(list(range(uav_n_lb,uav_n_ub)),y_avg_reward)
+    plt.show()
+    plt.savefig(f"Average Reward of {tower_n} tower ")
+
 
 if __name__ == "__main__":
     run_times=1000
-    tower_n=100
-    uav_n=10
-    #     # seed = 3
-    #     # random.seed(seed)
+    tower_n=50
+    uav_n=5
     position_set = np.random.random(size=(run_times, 2, tower_n + uav_n))
-    run_greedy_VRP(position_set,tower_n,uav_n)
+    reward_set=run_greedy_VRP(position_set,tower_n,uav_n)
+    print(f"Run {run_times} times. Average tour length:  {np.mean(reward_set)}")
+
+    # draw_path_change()
+    # draw_uav_change()
+
+
 
     #     # todo：
     #     #  对齐：
     #     #  地图的输入。城市数量，仓库数量
     #     #   飞机最大负载。
-    #     #   reward（路程和）
-    #        todo :保存1000个样本的数值结果（？）。统计平均值（√）统计方差（？）

@@ -7,7 +7,6 @@ Original file is located at
     https://colab.research.google.com/drive/1-iPTKQPQ9ePaN_pxE4pRkK6JgSOBxT7r
 #DRL4VRP
 """
-from statsmodels.graphics.plottools import rainbow
 
 # from google.colab import drive
 # drive.mount('/content/drive')
@@ -21,7 +20,11 @@ import torch
 import torch.nn as nn
 from Greedy_VRP import run_greedy_VRP
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-import  data_analysis
+if device=='cuda':
+    import matplotlib
+    matplotlib.use('Agg')  # 防止尝试使用图形界面，允许在没有图形界面的环境中运行。
+
+# import  data_analysis
 
 
 # %matplotlib inline
@@ -205,7 +208,7 @@ class DRL4TSP(nn.Module):
         """
         # 这里已经是坐标的形式了！！！
         batch_size, input_size, sequence_size = static.size()
-        distance = self.node_distance_fn(static)  # (B,num_node,num_node) # node 2 node 的距离
+        distance = self.node_distance_fn(static,self.depot_num)  # (B,num_node,num_node) # node 2 node 的距离
         if decoder_input is None:
             raise ValueError("DRL4TSP decoder input is None!")
 
@@ -349,15 +352,8 @@ reward函数用于计算给定路径的总行驶距离，作为优化目标的�
     3. 当车辆载重为 0 时，必须返回仓库进行补给
 """
 
-import os
-import numpy as np
-import torch
 from torch.utils.data import Dataset
-from torch.autograd import Variable
-import matplotlib
 
-# matplotlib.use('Agg')  # 防止尝试使用图形界面，允许在没有图形界面的环境中运行。如果使用谷歌请取消注释
-import matplotlib.pyplot as plt
 
 
 class VehicleRoutingDataset(Dataset):
@@ -425,399 +421,127 @@ class VehicleRoutingDataset(Dataset):
         return self.static[idx], self.dynamic[idx], self.static[idx, :, :self.num_depots]  # ????什么意思啊
         # return (self.static[idx], self.dynamic[idx], self.static[idx, :, 0:1]) # 最后一个变量是仓库。需要改
 
-    def node_distance(self, static):
-        '''
-        这个版本是计算【点a-点b-点b最近的仓库】的距离的函数。是”可以访问他人仓库“的功能时使用的
-        static的维度:应该是B，2，num_depots+num_city
-        '''
-        depot_positions = static[:, :, :self.num_depots]  # 维度应该是B，2，num_depots
-        city_positions = static[:, :, self.num_depots:]  # 维度应该是B，2，num_city
-        depot_positions_expanded = depot_positions.unsqueeze(2).expand(-1, -1, city_positions.size(2),
-                                                                       -1)  # B,2,num_city, num_depots
-        distances_to_depot = torch.sqrt(
-            torch.sum((city_positions.unsqueeze(3) - depot_positions_expanded) ** 2, dim=1))  # B,num_city,num_depots
-        # 取每行最小值作为每个节点到最近仓库的距离
-        min_distances, _ = torch.min(distances_to_depot, dim=2)
-        # min_distances = torch.cat((torch.zeros(min_distances.size(0), self.num_depots).to('cuda'), min_distances), dim=1)
-        min_distances = torch.cat(
-            (torch.zeros(min_distances.size(0), self.num_depots).to(static.device), min_distances), dim=1)
-        # 计算所有节点之间的距离
-        distances_between_node = torch.sqrt(
-            torch.sum((static.unsqueeze(2) - static.unsqueeze(3)) ** 2, dim=1))  # 计算欧式距离
-        distances = torch.cat((distances_between_node, min_distances.unsqueeze(1)), dim=1)
-        # distances大小为 (betch_size,seq_len+1,seq_len)加上了最近仓库张量
-        return distances
 
-    # def node_distance2(self, static):
-    #     """
-    #     和楼上不一样！这个函数需要适用于点到仓库的距离
-    #     之前的版本return 的维度是B，num_node+1,num_node.属于是强行在第二个维度的最后面上添加了一个大小为num_node的矩阵……
-    #     所以返回值的[b][-1][i]表示在第b个batch里面，第i个node离最近的仓库的距离。（如果第i是仓库则距离=0）
-    #     """
-    #
-    #     # # 既然要改成只能回到自己的机场，这个之后需要修改。
-    #     # depot_positions = static[:, :, :self.num_depots]# 维度应该是B，2，num_depots
-    #     # city_positions = static[:, :, self.num_depots:]# 维度应该是B，2，num_city
-    #     # depot_positions_expanded = depot_positions.unsqueeze(2).expand(-1, -1, city_positions.size(2), -1)# B,2,num_city, num_depots
-    #     # # 计算每个节点到最近仓库的距离
-    #     # distances_to_depot = torch.sqrt(torch.sum((city_positions.unsqueeze(3) - depot_positions_expanded) ** 2, dim=1))# B,num_city,num_depots
-    #     # # 取每行最小值，作为每个city节点到最近仓库的距离 这个应该不用再取最小值了，这行要删掉。
-    #     # min_distances, _ = torch.min(distances_to_depot, dim=2) # (B,num_city)
-    #     # min_distances = torch.cat( # 这一行本意是在前面加上“每个仓库距离最近的仓库（自己）距离为0”的意思）
-    #     #     (torch.zeros(min_distances.size(0), self.num_depots).to(static.device), min_distances), dim=1)
-    #
-    #     # 计算所有节点之间的距离
-    #     distances_between_node = torch.sqrt(
-    #         torch.sum((static.unsqueeze(2) - static.unsqueeze(3)) ** 2, dim=1))  # 计算欧式距离
-    #     # distances = torch.cat((distances_between_node, min_distances.unsqueeze(1)), dim=1)
-    #
-    #     return distances_between_node  # distances # distances大小为 (betch_size,seq_len+1,seq_len).加上了最近仓库张量
-
-    def update_mask(self, dynamic, distance, chosen_idx=None):
-        """更新用于隐藏非有效状态的掩码。用于【可以访问他人仓库】的功能
-
-        参数
-        ----------
-        dynamic: torch.autograd.Variable 的大小为 (1, num_feats, seq_len)
-        chosen_idx:[非常重要] 是当前的无人机的坐标。需要根据当前坐标，mask下一个可能的点。
-        """
-
-        # 将浮点数转换为整数进行计算
-        loads = dynamic.data[:, 0]  # (batch_size, seq_len)
-        demands = dynamic.data[:, 1]  # (batch_size, seq_len)
-        nodedistance = distance + distance[:, -1, :].unsqueeze(1)  # 节点之间的距离加上与最近仓库的距离。
-        nodedistance = nodedistance[:, :-1, :]  # 第二维度的意思：前面的值是节点之间的距离加上与最近仓库的距离。
-
-        # 计算 chosen_idx 到仓库点的距离
-        depot_distances = distance[torch.arange(distance.size(0)), chosen_idx.squeeze(1), :self.num_depots]
-        # 将 chosen_distance 的前 self.num_depots 个元素替换为 chosen_idx 到仓库点的距离。
-        chosen_distance = nodedistance[torch.arange(nodedistance.size(0)), chosen_idx.squeeze(1)]
-        chosen_distance[:, :self.num_depots] = depot_distances
-
-        # 如果没有剩余的正需求量，我们可以结束行程。
-        if demands.eq(0).all():  # 即所有batch的里面，地图里面每一个点都没有需求了. 外界检测到全0的mask会退出vrp流程。
-            return demands * 0.
-
-        # 这个 demand ne 0 会筛选出：所有有需求的city+所有空的仓库节点
-        #  第二项三项筛选出并且loads-chosen_distance需要大于0的city【虽然这一条会涉及到仓库，但是先假设后续会单独对仓库进行处理，这里怎么样都不管】
-        new_mask = demands.ne(0) * demands.lt(loads - chosen_distance) * (loads - chosen_distance > 0)
-
-        # 我们应该避免连续两次前往仓库
-        # repeat_home = chosen_idx.ne(0)
-        # if repeat_home.any(): # 不在仓库的可以回去。
-        #     new_mask[repeat_home.nonzero(), 0] = 1.
-        # if (~repeat_home).any(): # 在仓库的不能继续访问仓库
-        #     new_mask[(~repeat_home).nonzero(), 0] = 0.
-        ############################# 这段是避免连续两次前往仓库（"如果在仓库，下一个就不可以访问任何仓库"）
-        for depot_idx in range(self.num_depots):
-            repeat_home = chosen_idx == depot_idx
-            if repeat_home.any():
-                new_mask[repeat_home.squeeze().nonzero(), :self.num_depots] = 0
-        ##############################
-
-        # ...除非我们在等待小批量中的其他样本完成
-        # has_no_load = loads[:, 0].eq(0).float() # 仓库load=0 说明无人机归位。
-        # has_no_demand = demands[:, 1:].sum(1).eq(0).float() # 这里的1要改/所有city都没有demand
-        has_no_demand = demands[:, self.num_depots:].sum(1).eq(0).float()  # 所有city都没有demand，转1和0 【避免本无人机在仓库但是其他无人机还没回去）
-
-        # combined = (has_no_load + has_no_demand).gt(0) # combine zero：该样本有的 city有demand 并且 车load不等于0
-        combined = has_no_demand.gt(0)  # combined应该是B 1 吧？
-        if combined.any():  # 如果该batch里面存在city没有demand（也就是说有的batch结束了，需要让无人机允许留在原地）
-            # 首先，我们将所有节点的掩码设置为0，防止访问
-            # new_mask[combined.nonzero(), :] = 0.
-            # 对于每个样本，如果它已经在仓库中，我们只允许它访问当前所在的仓库
-            # for sample_idx in combined.nonzero().squeeze():
-            for sample_idx in combined.nonzero():  # 找到全部无需求的batch id
-                current_location = chosen_idx[sample_idx]  # 找到当前位置
-                if current_location < self.num_depots:  # 如果当前在仓库
-                    # 仅允许访问当前所在的仓库
-                    # new_mask[combined.nonzero(), :] = 0.
-                    new_mask[sample_idx, current_location] = 1.
-                # else:
-                #     # 如果不在仓库，但没有需求或者载重为0，则允许访问【demand不为0的仓库】
-                #     #new_mask[sample_idx, :self.num_depots] = 1.
-                #     new_mask[sample_idx * torch.ones_like(demands[sample_idx], dtype=torch.long), demands[sample_idx] != 0] = 1.
-
-        # 判断是否存在某一行的mask全为0####################
-        all_zero_mask = (new_mask == 0).all(dim=1)
-        if all_zero_mask.any():
-            # 找到全为0的行的索引
-            all_zero_indices = all_zero_mask.nonzero(as_tuple=True)[0]
-            # 将这些行中chosen_idx对应位置的mask设为1
-            new_mask[all_zero_indices, chosen_idx[all_zero_indices]] = 1
-            print("error:存在某一行的mask全为0")
-
-        return new_mask.float()
-
-    # def update_mask2(self, dynamic, n2n_distance, current_idx, car_id):
-    #     """和上一个相比是只允许无人机返回自己的仓库。
-    #
-    #     dynamic: torch.autograd.Variable 的大小为 (1, num_feats, seq_len)
-    #     chosen_idx:[非常重要] 大小(B,1)是当前的无人机的坐标。需要根据当前坐标，mask下一个可能的点。
-    #     """
-    #     # 将浮点数转换为整数进行计算
-    #     loads = dynamic.data[:, 0]  # (batch_size, seq_len)
-    #     demands = dynamic.data[:, 1]  # (batch_size, seq_len)
-    #
-    #     '''
-    #     9.28修改：这里只考虑mask city的逻辑：(就算是影响到仓库也没关系，后续会处理仓库进行覆盖。)
-    #         找到当前的位置，并且取出当前点-所有点的距离+所有点回自己的仓库（已经给了carid）的距离
-    #         （所以我需要node-node 矩阵就够了。因为可以转换成：D(当前点~所有点) +D(自己仓库~所有点)
-    #     '''
-    #     # n2n_distance 是维度为(B,node_num,node_num)的
-    #     dis_cur2all=n2n_distance[torch.arange(n2n_distance.size(0)),current_idx.squeeze(1)]
-    #     dis_depot2all=n2n_distance[torch.arange(n2n_distance.size(0)),car_id] # 仓库id=当前car id
-    #
-    #     dis_cur2node2depot=dis_cur2all+dis_depot2all # D(当前点~所有点) +D(自己仓库~所有点) 总距离
-    #
-    #     # 如果没有剩余的正需求量，我们可以结束行程。
-    #     if demands.eq(0).all():  # 即所有batch的里面，地图里面每一个点都没有需求了：
-    #         return demands * 0.
-    #
-    #     # 这个 demand ne 0 会筛选出：所有有需求的city+所有空的仓库节点
-    #     # 第二项三项筛选出并且loads-chosen_distance-demand大于0的city【虽然这一条会涉及到仓库，但是先假设后续会单独对仓库进行处理，这里怎么样都不管】
-    #     new_mask = demands.ne(0) * demands.lt(loads - dis_cur2node2depot) * (loads - dis_cur2node2depot > 0)
-    #
-    #     too_far=demands.lt(loads - dis_cur2node2depot)
-    #     ##############################
-    #     # 9.28修改方案：任何时刻兜底把所有仓库mask掉.
-    #     new_mask[:, :self.num_depots] = 0
-    #     # 然后判断让不在仓库的可以回到自己的仓库。
-    #     in_city = (current_idx >= self.num_depots)
-    #     new_mask[in_city.squeeze(), car_id] = 1
-    #
-    #     # ...除非我们在等待小批量中的其他样本完成
-    #     # has_no_load = loads[:, 0].eq(0).float() # 仓库load=0 说明无人机归位。
-    #     # has_no_demand = demands[:, 1:].sum(1).eq(0).float() # 这里的1要改/所有city都没有demand
-    #     has_no_demand = demands[:, self.num_depots:].sum(1).eq(0).float()  # 所有city都没有demand，转1和0 【避免本无人机在仓库但是其他无人机还没回去）
-    #
-    #     # combined = (has_no_load + has_no_demand).gt(0) # combine zero：该样本有的 city有demand 并且 车load不等于0
-    #     combined = has_no_demand.gt(0)  # combined应该是B 1 吧？
-    #     if combined.any():  # 如果该batch里面存在city没有demand（也就是说有的batch结束了，需要让无人机允许留在原地）
-    #         # 首先，我们将所有节点的掩码设置为0，防止访问
-    #         # new_mask[combined.nonzero(), :] = 0.
-    #         # 对于每个样本，如果它已经在仓库中，我们只允许它访问当前所在的仓库
-    #         # for sample_idx in combined.nonzero().squeeze():
-    #         for sample_idx in combined.nonzero():  # 找到全部无需求的batch id
-    #             current_location = current_idx[sample_idx]  # 找到当前位置
-    #             if current_location < self.num_depots:  # 如果当前在仓库
-    #                 # 仅允许访问当前所在的仓库
-    #                 # new_mask[combined.nonzero(), :] = 0.
-    #                 new_mask[sample_idx, current_location] = 1.
-    #             # else:
-    #             #     # 如果不在仓库，但没有需求或者载重为0，则允许访问【demand不为0的仓库】
-    #             #     #new_mask[sample_idx, :self.num_depots] = 1.
-    #             #     new_mask[sample_idx * torch.ones_like(demands[sample_idx], dtype=torch.long), demands[sample_idx] != 0] = 1.
-    #
-    #     # 判断是否存在某一行的mask全为0####################
-    #     all_zero_mask = (new_mask == 0).all(dim=1)
-    #     if all_zero_mask.any():
-    #         # 以下是打底的补丁，先注释掉看看不要补丁会不会引起异常报错。【会。因为存在最远的有需求的城市正好去不了的情况】
-    #         # 找到全为0的行的索引
-    #         all_zero_indices = all_zero_mask.nonzero(as_tuple=True)[0]
-    #         # 将这些行中chosen_idx(当前位置即仓库位置？）对应位置的mask设为1
-    #         new_mask[all_zero_indices, current_idx[all_zero_indices]] = 1
-    #
-    #         all_zero_mask = (new_mask == 0).all(dim=1)
-    #         if all_zero_mask.any(): # 补丁之后如果还有问题……
-    #             a=1
-    #             raise ValueError("error:存在某一行的mask全为0")
-    #
-    #     return new_mask.float()
-
-    def update_dynamic(self, dynamic, distance, next_idx, current_idx):  # 加了参数：访问的前一个点。
-        """
-        用于更新当前地图的dynamic的函数。啊要用到distance是因为dynamic里面的load需要减去距离……
-        这个函数是【允许访问他人仓库】
-        """
-        # print("update_dynamic:网络预测下一步next_idx 是：\n",next_idx)
-        # print("update_dynamic:当前所在位置current_idx 是：\n",current_idx)
-        """更新 (load, demand) 的值。"""
-        current_idx = current_idx.squeeze()
-        # 根据是访问仓库还是城市，以不同方式更新动态元素
-        ##############################
-        visit = next_idx.ge(self.num_depots)  # 访问的是城市还是仓库
-        depot = next_idx.lt(self.num_depots)
-        # 如果 chosen_idx 小于 num_depots，则表示访问的是仓库
-        ##############################
-
-        # 克隆动态变量，以免破坏图
-        all_loads = dynamic[:, 0].clone()
-        all_demands = dynamic[:, 1].clone()
-        load = torch.gather(all_loads, 1, next_idx.unsqueeze(1))  # 获得batch里每一个样本，下一个节点的load
-        demand = torch.gather(all_demands, 1, next_idx.unsqueeze(1))  # 获得batch里每一个样本，下一个节点的demand
-        distance_matrix = distance[:, :-1, :]  # 距离矩阵 取到-1是因为最后一个是“每个点到最近的仓库的距离
-        # 在小批量中 - 如果我们选择访问一个城市，尽可能满足其需求量
-        if visit.any():
-            diff_distances = distance_matrix[
-                torch.arange(distance_matrix.size(0)), current_idx, next_idx.squeeze()].unsqueeze(1)
-            # 上一次选择的节点与这次选择的节点的差值
-            new_load = torch.clamp(load - demand - diff_distances, min=0)
-            new_demand = torch.clamp(demand - load, min=0)
-
-            # 将载重量广播到所有节点，但单独更新需求量
-            visit_idx = visit.nonzero().squeeze()
-
-            all_loads[visit_idx] = new_load[visit_idx]
-            all_demands[visit_idx, next_idx[visit_idx]] = new_demand[visit_idx].view(-1)
-            # all_demands[visit_idx, 0] = -1. + new_load[visit_idx].view(-1) # 改了
-
-        # -----------测试把上一个访问节点是仓库的时候，条件扩展为"当前访问节点可以是任何点（即允许连续两次访问仓库）
-        # 使用布尔索引来找出上一个访问的是仓库的样本
-        # is_depot = last_visited.lt(self.num_depots).to('cuda')
-        depot_visited_idx = current_idx.lt(self.num_depots).to(dynamic.device)
-
-        # depot_visited_idx = is_depot # 找出同时访问城市且上一次访问的是仓库的样本（不用了，需要可以连续访问仓库）
-
-        # 1，原始的visit idx是【数组下标】不是城市序号！！
-        depot_visited_idx = depot_visited_idx.nonzero().squeeze()
-
-        # 使用布尔索引和高效的张量操作来更新all_demands
-        # all_demands[depot_visited_idx.to('cuda'), last_visited.to('cuda')[depot_visited_idx]] = -1. #+ new_load[depot_visited_idx].reshape(-1,2)
-        all_demands[depot_visited_idx.to(dynamic.device), current_idx.to(dynamic.device)[
-            depot_visited_idx]] = -1.  # + new_load[depot_visited_idx].reshape(-1,2)
-
-        # 返回仓库以填充车辆载重量
-        ##############################
-        # if depot.any():
-        #     all_loads[depot.nonzero().squeeze()] = 1.
-        #     all_demands[depot.nonzero().squeeze(), 0] = 0.
-        if depot.any():
-            # all_loads[depot.nonzero().squeeze()] = float(self.max_load)
-            all_loads[depot.nonzero().squeeze()] = float(self.car_load)
-            depot_indices = next_idx[depot.squeeze()]
-            all_demands[depot.squeeze(), depot_indices] = 0.
-
-        new_dynamic = torch.cat((all_loads.unsqueeze(1), all_demands.unsqueeze(1)), 1)
-        # return torch.tensor(tensor.data, device=dynamic.device)
-        # 避免额外的计算开销和不必要的内存使用
-        return new_dynamic.clone().detach().to(device=dynamic.device)
-
-    # # 把这个函数丢到外面（update_dynamic2_outside）去了。。。方便管理。
-    # def update_dynamic2tem(self, dynamic, distance, next_idx, current_idx):  # 加了参数：访问的前一个点。
-    #     """
-    #     这是用于更新当前地图的dynamic的函数。此函数mask规则是只允许访问自己的仓库。
-    #     要用到distance是因为dynamic里面的load需要减去距离……
-    #     current_idx：当前所在的点id（即离开的点）。如果为仓库，则需要更新该点demand=-1以说明已经为空。
-    #     next_idx：访问的下一个节点。认为【已经去了】 。所以下一个节点的需求、飞机的load要根据节点类型而更新。
-    #     """
-    #
-    #     current_idx = current_idx.squeeze()
-    #     # 根据【下一个节点】是访问仓库还是城市，以不同方式更新dynamic
-    #     visit = next_idx.ge(self.num_depots)  # 下一个节点访问的是城市还是仓库
-    #     depot = next_idx.lt(self.num_depots)
-    #
-    #     # 克隆动态变量，以免破坏图
-    #     all_loads = dynamic[:, 0].clone()
-    #     all_demands = dynamic[:, 1].clone()
-    #     load = torch.gather(all_loads, 1, next_idx.unsqueeze(1))  # 获得batch里每一个样本，下一个节点的load
-    #     demand = torch.gather(all_demands, 1, next_idx.unsqueeze(1))  # 获得batch里每一个样本，下一个节点的demand
-    #     n2n_distance = distance
-    #     # 在batch中 - 如果我们下一个点选择访问一个城市：
-    #     if visit.any():
-    #         distance = n2n_distance[  #取对应batch的对应两点间的距离值（毕竟只要减去两个点之间的真实距离，无需考虑仓库距离。
-    #             torch.arange(n2n_distance.size(0)), current_idx, next_idx.squeeze()].unsqueeze(1)
-    #         # 上一次选择的节点与这次选择的节点的差值
-    #         check_load=load - demand - distance
-    #         if (check_load<0).any():
-    #             print(check_load)
-    #             raise ValueError("ERROR: load can not be negative.")
-    #
-    #         new_load = torch.clamp(load - demand - distance, min=0)
-    #
-    #         new_demand = torch.clamp(demand - load, min=0)
-    #
-    #         # 将载重量广播到所有节点，但单独更新需求量
-    #         visit_idx = visit.nonzero().squeeze()
-    #
-    #         all_loads[visit_idx] = new_load[visit_idx]
-    #         all_demands[visit_idx, next_idx[visit_idx]] = new_demand[visit_idx].view(-1)
-    #
-    #     #  TT终于想起来了：dynamic会标记仓库是非空（-1空、0非空），所以update的时候，如果无人机离开仓库（当前点=仓库），就要更新该仓库demand
-    #     #  注意，本质上我们认为飞机【已经去了】下一个节点 next_idx。所以下一个节点的需求、飞机的load也要根据节点类型而更新。
-    #     # 使用布尔索引来找出当前节点的是仓库的样本
-    #     depot_visited = current_idx.lt(self.num_depots).to(dynamic.device)
-    #
-    #     # depot_visited_idx是【数组下标】不是城市序号！！
-    #     depot_visited_idx = depot_visited.nonzero().squeeze()
-    #
-    #     # 使用布尔索引和高效的张量操作来更新all_demands【意思是：把当前节点是depot的样本，的对应depot的demand更新为-1
-    #     # all_demands[depot_visited_idx.to('cuda'), last_visited.to('cuda')[depot_visited_idx]] = -1. #+ new_load[depot_visited_idx].reshape(-1,2)
-    #     all_demands[depot_visited_idx.to(dynamic.device), current_idx.to(dynamic.device)[
-    #         depot_visited_idx]] = -1.  # + new_load[depot_visited_idx].reshape(-1,2)
-    #
-    #     # 在batch中 - 如果我们下一个选择访问一个仓库，则load回满，仓库的deman标记为0
-    #     # if depot.any():
-    #     #     all_loads[depot.nonzero().squeeze()] = 1.
-    #     #     all_demands[depot.nonzero().squeeze(), 0] = 0.
-    #     if depot.any():
-    #         all_loads[depot.nonzero().squeeze()] = float(self.car_load)
-    #         all_demands[depot.squeeze(), next_idx[depot.squeeze()]] = 0.
-    #
-    #     # 把load和demand拼接会dynamic
-    #     new_dynamic = torch.cat((all_loads.unsqueeze(1), all_demands.unsqueeze(1)), 1)
-    #     return new_dynamic.clone().detach().to(device=dynamic.device)  # 避免额外的计算开销和不必要的内存使用
-def node_distance2_outside(static):
-    """
-    static: 所有点（包括仓库和tower）的坐标
-    本函数：返回每个点到另一个点之间的距离。
-    之前的版本：return 的维度是B，num_node+1,num_node.属于是强行在第二个维度的最后面上添加了一个大小为num_node的矩阵……
-    所以返回值的[b][-1][i]表示在第b个batch里面，第i个node离最近的仓库的距离。（如果第i是仓库则距离=0）
-    """
-
-    # depot_positions = static[:, :, :self.num_depots]# 维度应该是B，2，num_depots
-    # city_positions = static[:, :, self.num_depots:]# 维度应该是B，2，num_city
-    # depot_positions_expanded = depot_positions.unsqueeze(2).expand(-1, -1, city_positions.size(2), -1)# B,2,num_city, num_depots
-    # # 计算每个节点到最近仓库的距离
-    # distances_to_depot = torch.sqrt(torch.sum((city_positions.unsqueeze(3) - depot_positions_expanded) ** 2, dim=1))# B,num_city,num_depots
-    # # 取每行最小值，作为每个city节点到最近仓库的距离 这个应该不用再取最小值了，这行要删掉。
-    # min_distances, _ = torch.min(distances_to_depot, dim=2) # (B,num_city)
-    # min_distances = torch.cat( # 这一行本意是在前面加上“每个仓库距离最近的仓库（自己）距离为0”的意思）
-    #     (torch.zeros(min_distances.size(0), self.num_depots).to(static.device), min_distances), dim=1)
-
-    # 计算所有节点之间的距离
+def node_distance_outside(static,num_depots):
+    '''
+    这个版本是计算【点a-点b-点b最近的仓库】的距离的函数。是”完全共享仓库“的功能时使用的.（可以在别人的仓库充电、最终停放）
+    todo 修改：目前版本是返回【点a-点b-点b最远的仓库】因为存在最近仓库被占用的情况。【check一下画图和最后的完成情况。……真的能访问完吗…】
+    static的维度:应该是B，2，num_depots+num_city
+    '''
+    depot_positions = static[:, :, :num_depots]  # 维度应该是B，2，num_depots
+    city_positions = static[:, :, num_depots:]  # 维度应该是B，2，num_city
+    depot_positions_expanded = depot_positions.unsqueeze(2).expand(-1, -1, city_positions.size(2),
+                                                                   -1)  # B,2,num_city, num_depots
+    distances_to_depot = torch.sqrt(
+        torch.sum((city_positions.unsqueeze(3) - depot_positions_expanded) ** 2, dim=1))  # B,num_city,num_depots
+    # 取每行最小值作为每个节点到最近仓库的距离
+    min_distances2depot, _ = torch.min(distances_to_depot, dim=2) # B,num_city,
+    min_distances2depot = torch.cat(  # 拼回 B，num_depot+ numcity的大小（因为仓库到最近的仓库距离=0，所以直接用zero矩阵）
+        (torch.zeros(min_distances2depot.size(0), num_depots).to(static.device), min_distances2depot), dim=1) #
+    #########todo test 改成最远仓库
+    max_distances2depot,_=torch.max(distances_to_depot, dim=2)
+    max_distances2depot = torch.cat(  # 拼回 B，num_depot+ numcity的大小（因为仓库到最近的仓库距离=0，所以直接用zero矩阵）
+        (torch.zeros(max_distances2depot.size(0), num_depots).to(static.device), max_distances2depot), dim=1)  #
+    #########todo test 改成最远仓库
+    # 计算所有节点之间的距离 【需求是：每一个点到下一个点+下一个点回仓库。所以我需要的是：n2n 和 n2depot】
     distances_between_node = torch.sqrt(
         torch.sum((static.unsqueeze(2) - static.unsqueeze(3)) ** 2, dim=1))  # 计算欧式距离
-    # distances = torch.cat((distances_between_node, min_distances.unsqueeze(1)), dim=1)
+    distances = torch.cat((distances_between_node, max_distances2depot.unsqueeze(1)), dim=1) # 前面是n2n，后面是n2depot
+    # distances大小为 (betch_size,seq_len+1,seq_len)加上了最近仓库张量
+    return distances
 
-    return distances_between_node  # distances大小为 (betch_size,seq_len+1,seq_len).加上了最近仓库张量
+def node_distance_half_shared_outside(static,num_depots):
+    '''
+    此函数是用于半共享：需要做到“保证一定能回到自己仓库，但是也可以去其他仓库充电” ——等等那最终回归的时候怎么办？
 
-def update_mask2_outside(num_depots,dynamic, n2n_distance, current_idx, car_id):
-    """和上一个相比是只允许无人机返回自己的仓库。
+    这个版本是计算【点a-点b-点b的????】的距离的函数。
+    todo 【check一下画图和最后的完成情况。……真的能访问完吗…】
+    todo 【另一个可能的思路：保证必须能回自己的仓库，但是中间可以去他人仓库充电】
+     问题：是否能连续访问仓库呢？：可以——当且仅当它在仓库且继续留在仓库时，飞回自己的（好难办，互相等怎么搞……）
+        假设：
+        无人机：在城市:访问;        在他人仓库:临时充电、等着回家      在自己仓库:临时充电、永久停留 【要是动态需求不是……】
+        梳理思路：无人机留在原地：1，留在城市：可以。因为自己的仓库被临时借用。
+                            2，留在仓库：(1)在自己仓库：可，仅当最远的需求去不了时 (2)在他人仓库：？？无可去需求，等着回家）：
+            按照这个假设：2(2)是不能留在仓库的！需要（强制可以重复！？——还是说允许短暂停留，直到自己家能回 （不行会互相等）
 
+     留在原地的话，留在城市合理吗：合理，因为可能自己的仓库被临时借用。要改！！！
+    static的维度:应该是B，2，num_depots+num_city
+    '''
+    depot_positions = static[:, :, :num_depots]  # 维度应该是B，2，num_depots
+    city_positions = static[:, :, num_depots:]  # 维度应该是B，2，num_city
+    depot_positions_expanded = depot_positions.unsqueeze(2).expand(-1, -1, city_positions.size(2),
+                                                                   -1)  # B,2,num_city, num_depots
+    distances_to_depot = torch.sqrt(
+        torch.sum((city_positions.unsqueeze(3) - depot_positions_expanded) ** 2, dim=1))  # B,num_city,num_depots
+    # 取每行最小值作为每个节点到最近仓库的距离
+    min_distances2depot, _ = torch.min(distances_to_depot, dim=2) # B,num_city,
+    min_distances2depot = torch.cat(  # 拼回 B，num_depot+ numcity的大小（因为仓库到最近的仓库距离=0，所以直接用zero矩阵）
+        (torch.zeros(min_distances2depot.size(0), num_depots).to(static.device), min_distances2depot), dim=1) #
+    #########todo test 改成最远仓库
+    max_distances2depot,_=torch.max(distances_to_depot, dim=2)
+    max_distances2depot = torch.cat(  # 拼回 B，num_depot+ numcity的大小（因为仓库到最近的仓库距离=0，所以直接用zero矩阵）
+        (torch.zeros(max_distances2depot.size(0), num_depots).to(static.device), max_distances2depot), dim=1)  #
+    #########todo test 改成最远仓库
+    # 计算所有节点之间的距离 【需求是：每一个点到下一个点+下一个点回仓库。所以我需要的是：n2n 和 n2depot】
+    distances_between_node = torch.sqrt(
+        torch.sum((static.unsqueeze(2) - static.unsqueeze(3)) ** 2, dim=1))  # 计算欧式距离
+    distances = torch.cat((distances_between_node, max_distances2depot.unsqueeze(1)), dim=1) # 前面是n2n，后面是n2depot
+    # distances大小为 (betch_size,seq_len+1,seq_len)加上了最近仓库张量
+    return distances
+
+def update_mask_outside(num_depots, dynamic, distance, current_idx, car_id):
+    """更新用于隐藏非有效状态的掩码。用于【可以访问他人仓库】的功能
+
+    参数
+    ----------
     dynamic: torch.autograd.Variable 的大小为 (1, num_feats, seq_len)
-    n2n_distance：每两个点之间的距离。
-    chosen_idx:[非常重要] 大小(B,1)是当前的无人机的坐标。需要根据当前坐标，mask下一个可能的点。
+    distance: 在这里是node distance 1函数给的距离矩阵。-1位置存放着每个点到其最近仓库的距离。
+    chosen_idx:[非常重要] 是当前的无人机的坐标。需要根据当前坐标，mask下一个可能的点。（已经改名为current_idx）
+    car_id:并没有用。只是为了对齐update_mask2_outside的参数。
     """
+
     # 将浮点数转换为整数进行计算
     loads = dynamic.data[:, 0]  # (batch_size, seq_len)
     demands = dynamic.data[:, 1]  # (batch_size, seq_len)
+    n2n2depot_dis = distance + distance[:, -1, :].unsqueeze(1)  # 节点之间的距离加上与最近仓库的距离。
+    n2n2depot_dis = n2n2depot_dis[:, :-1, :]  # 第二维度的意思：前面的值是节点之间的距离加上与最近仓库的距离。
 
-    '''
-    9.28修改：这里只考虑mask city的逻辑：(就算是影响到仓库也没关系，后续会处理仓库进行覆盖。)
-        找到当前的位置，并且取出当前点-所有点的距离+所有点回自己的仓库（已经给了carid）的距离 
-        （所以我需要node-node 矩阵就够了。因为可以转换成：D(当前点~所有点) +D(自己仓库~所有点)
-    '''
-    # n2n_distance 是维度为(B,node_num,node_num)的
-    dis_cur2all=n2n_distance[torch.arange(n2n_distance.size(0)),current_idx.squeeze(1)]
-    dis_depot2all=n2n_distance[torch.arange(n2n_distance.size(0)),car_id] # 仓库id=当前car id
 
-    dis_cur2node2depot=dis_cur2all+dis_depot2all # D(当前点~所有点) +D(自己仓库~所有点) 总距离
+    # 计算 current_idx 到仓库点的距离【注意：共享仓库】
+    # depot_distances = distance[torch.arange(distance.size(0)), current_idx.squeeze(1), :num_depots]
+    # 根据batch，取当前位置-其他所有点的距离。
+    chosen_distance = n2n2depot_dis[torch.arange(distance.size(0)), current_idx.squeeze(1)]
+    # chosen_distance[:, :num_depots] = depot_distances # 什么无效代码。
 
     # 如果没有剩余的正需求量，我们可以结束行程。
-    if demands.eq(0).all():  # 即所有batch的里面，地图里面每一个点都没有需求了：
+    if demands.eq(0).all():  # 即所有batch的里面，地图里面每一个点都没有需求了. 外界检测到全0的mask会退出vrp流程。
         return demands * 0.
 
     # 这个 demand ne 0 会筛选出：所有有需求的city+所有空的仓库节点
-    # 第二项三项筛选出并且loads-chosen_distance-demand大于0的city【虽然这一条会涉及到仓库，但是先假设后续会单独对仓库进行处理，这里怎么样都不管】
-    new_mask = demands.ne(0) * demands.lt(loads - dis_cur2node2depot) * (loads - dis_cur2node2depot > 0)
+    #  第二项三项筛选出并且loads-chosen_distance需要大于0的city【虽然这一条会涉及到仓库，但是先假设后续会单独对仓库进行处理，这里怎么样都不管】
+    new_mask = demands.ne(0) * demands.lt(loads - chosen_distance) * (loads - chosen_distance > 0)
+
+    # 我们应该避免连续两次前往仓库
+    # at_depot = chosen_idx.ne(0)
+    # if at_depot.any(): # 不在仓库的可以回去。
+    #     new_mask[at_depot.nonzero(), 0] = 1.
+    # if (~at_depot).any(): # 在仓库的不能继续访问仓库
+    #     new_mask[(~at_depot).nonzero(), 0] = 0.
+    ############################# 这段是避免连续两次前往仓库（"如果在仓库，下一个就不可以访问任何仓库"）
+    # new_mask2 = new_mask.clone()
+    # for depot_idx in range(num_depots):
+    #     at_depot = current_idx == depot_idx
+    #     if at_depot.any():
+    #         new_mask[at_depot.squeeze().nonzero(), :num_depots] = 0
+    ##############################
+    at_depot2 = current_idx < num_depots # todo 似乎没问题了。可以删掉楼上。
+    if at_depot2.any():
+        new_mask[at_depot2.squeeze().nonzero(), :num_depots] = 0
+
+    if not (new_mask == new_mask).all():
+        raise ValueError("(new_mask != new_mask2).all()")
 
     ##############################
-    # 9.28修改方案：任何时刻兜底把所有仓库mask掉.
-    new_mask[:, :num_depots] = 0
-    # 然后判断让不在仓库的可以回到自己的仓库。
-    in_city = (current_idx >= num_depots)
-    new_mask[in_city.squeeze(), car_id] = 1
 
     # ...除非我们在等待小批量中的其他样本完成
     # has_no_load = loads[:, 0].eq(0).float() # 仓库load=0 说明无人机归位。
@@ -845,52 +569,46 @@ def update_mask2_outside(num_depots,dynamic, n2n_distance, current_idx, car_id):
     # 判断是否存在某一行的mask全为0####################
     all_zero_mask = (new_mask == 0).all(dim=1)
     if all_zero_mask.any():
-        # 以下是打底的补丁，先注释掉看看不要补丁会不会引起异常报错。【会。因为存在最远的有需求的城市正好去不了的情况】
         # 找到全为0的行的索引
-        all_zero_indices = all_zero_mask.nonzero(as_tuple=True)[0]
-        if any(current_idx[all_zero_indices] >= num_depots):# 检查是否是留在仓库。如果是留在城市就报错（
-            raise ValueError(f"uav {car_id} 留在原地:{current_idx[all_zero_indices]}")
+        all_zero_index = all_zero_mask.nonzero(as_tuple=True)[0]
+        # 检查是否是留在仓库。如果是留在城市就报错（
+        if any(current_idx[all_zero_index] >= num_depots):
+            raise ValueError(f"uav {car_id} 留在原地:{current_idx[all_zero_index]}")
+        # 将这些行中chosen_idx对应位置的mask设为1
+        new_mask[all_zero_index, current_idx[all_zero_index]] = 1 # 因为存在最远的有需求的城市正好去不了的情况
 
-        # 将这些行中chosen_idx(当前位置即仓库位置？）对应位置的mask设为1
-        new_mask[all_zero_indices, current_idx[all_zero_indices]] = 1
-        all_zero_mask = (new_mask == 0).all(dim=1)
-        if all_zero_mask.any(): # 补丁之后如果还有问题……
-            raise ValueError("error:存在某一行的mask全为0")
 
     return new_mask.float()
 
-def update_dynamic2_outside(num_depots,max_car_load,dynamic, distance, next_idx, current_idx):  # 加了参数：访问的前一个点。
 
+def update_dynamic_outside(num_depots,max_car_load,dynamic, distance, next_idx, current_idx):  # 加了参数：访问的前一个点。
     """
-    这是用于更新当前地图的dynamic的函数。此函数mask规则是只允许访问自己的仓库。
-    要用到distance是因为dynamic里面的load需要减去距离……
-    current_idx：当前所在的点id（即离开的点）。如果为仓库，则需要更新该点demand=-1以说明已经为空。
-    next_idx：访问的下一个节点。认为【已经去了】 。所以下一个节点的需求、飞机的load要根据节点类型而更新。
+    用于更新当前地图的dynamic的函数。啊要用到distance是因为dynamic里面的load需要减去距离……
+    这个函数是【允许访问他人仓库】
     """
-
+    # print("update_dynamic:网络预测下一步next_idx 是：\n",next_idx)
+    # print("update_dynamic:当前所在位置current_idx 是：\n",current_idx)
+    """更新 (load, demand) 的值。"""
     current_idx = current_idx.squeeze()
-    # 根据【下一个节点】是访问仓库还是城市，以不同方式更新dynamic
-    visit = next_idx.ge(num_depots)  # 下一个节点访问的是城市还是仓库
+    # 根据是访问仓库还是城市，以不同方式更新动态元素
+    ##############################
+    visit = next_idx.ge(num_depots)  # 访问的是城市还是仓库
     depot = next_idx.lt(num_depots)
+    # 如果 chosen_idx 小于 num_depots，则表示访问的是仓库
+    ##############################
 
     # 克隆动态变量，以免破坏图
     all_loads = dynamic[:, 0].clone()
     all_demands = dynamic[:, 1].clone()
     load = torch.gather(all_loads, 1, next_idx.unsqueeze(1))  # 获得batch里每一个样本，下一个节点的load
     demand = torch.gather(all_demands, 1, next_idx.unsqueeze(1))  # 获得batch里每一个样本，下一个节点的demand
-    n2n_distance = distance
-    # 在batch中 - 如果我们下一个点选择访问一个城市：
+    distance_matrix = distance[:, :-1, :]  # 距离矩阵 取到-1是因为最后一个是“每个点到最近的仓库的距离
+    # 在小批量中 - 如果我们选择访问一个城市，尽可能满足其需求量
     if visit.any():
-        distance = n2n_distance[  #取对应batch的对应两点间的距离值（毕竟只要减去两个点之间的真实距离，无需考虑仓库距离。
-            torch.arange(n2n_distance.size(0)), current_idx, next_idx.squeeze()].unsqueeze(1)
+        diff_distances = distance_matrix[
+            torch.arange(distance_matrix.size(0)), current_idx, next_idx.squeeze()].unsqueeze(1)
         # 上一次选择的节点与这次选择的节点的差值
-        check_load=load - demand - distance
-        if (check_load<0).any():
-            print(check_load)
-            raise ValueError("ERROR: load can not be negative.")
-
-        new_load = torch.clamp(load - demand - distance, min=0)
-
+        new_load = torch.clamp(load - demand - diff_distances, min=0)
         new_demand = torch.clamp(demand - load, min=0)
 
         # 将载重量广播到所有节点，但单独更新需求量
@@ -898,31 +616,39 @@ def update_dynamic2_outside(num_depots,max_car_load,dynamic, distance, next_idx,
 
         all_loads[visit_idx] = new_load[visit_idx]
         all_demands[visit_idx, next_idx[visit_idx]] = new_demand[visit_idx].view(-1)
+        # all_demands[visit_idx, 0] = -1. + new_load[visit_idx].view(-1) # 改了
 
-    #  TT终于想起来了：dynamic会标记仓库是非空（-1空、0非空），所以update的时候，如果无人机离开仓库（当前点=仓库），就要更新该仓库demand
-    #  注意，本质上我们认为飞机【已经去了】下一个节点 next_idx。所以下一个节点的需求、飞机的load也要根据节点类型而更新。
-    # 使用布尔索引来找出当前节点的是仓库的样本
-    depot_visited = current_idx.lt(num_depots).to(dynamic.device)
+    # -----------测试把上一个访问节点是仓库的时候，条件扩展为"当前访问节点可以是任何点（即允许连续两次访问仓库）
+    # 使用布尔索引来找出上一个访问的是仓库的样本
+    # is_depot = last_visited.lt(self.num_depots).to('cuda')
+    depot_visited_idx = current_idx.lt(num_depots).to(dynamic.device)
 
-    # depot_visited_idx是【数组下标】不是城市序号！！
-    depot_visited_idx = depot_visited.nonzero().squeeze()
+    # depot_visited_idx = is_depot # 找出同时访问城市且上一次访问的是仓库的样本（不用了，需要可以连续访问仓库）
 
-    # 使用布尔索引和高效的张量操作来更新all_demands【意思是：把当前节点是depot的样本，的对应depot的demand更新为-1
+    # 1，原始的visit idx是【数组下标】不是城市序号！！
+    depot_visited_idx = depot_visited_idx.nonzero().squeeze()
+
+    # 使用布尔索引和高效的张量操作来更新all_demands
     # all_demands[depot_visited_idx.to('cuda'), last_visited.to('cuda')[depot_visited_idx]] = -1. #+ new_load[depot_visited_idx].reshape(-1,2)
     all_demands[depot_visited_idx.to(dynamic.device), current_idx.to(dynamic.device)[
         depot_visited_idx]] = -1.  # + new_load[depot_visited_idx].reshape(-1,2)
 
-    # 在batch中 - 如果我们下一个选择访问一个仓库，则load回满，仓库的deman标记为0
+    # 返回仓库以填充车辆载重量
+    ##############################
     # if depot.any():
     #     all_loads[depot.nonzero().squeeze()] = 1.
     #     all_demands[depot.nonzero().squeeze(), 0] = 0.
     if depot.any():
-        all_loads[depot.nonzero().squeeze()] = float(max_car_load) # 恢复满格
-        all_demands[depot.squeeze(), next_idx[depot.squeeze()]] = 0.
+        # all_loads[depot.nonzero().squeeze()] = float(self.max_load)
+        all_loads[depot.nonzero().squeeze()] = float(max_car_load)
+        depot_indices = next_idx[depot.squeeze()]
+        all_demands[depot.squeeze(), depot_indices] = 0.
 
-    # 把load和demand拼接会dynamic
     new_dynamic = torch.cat((all_loads.unsqueeze(1), all_demands.unsqueeze(1)), 1)
-    return new_dynamic.clone().detach().to(device=dynamic.device)  # 避免额外的计算开销和不必要的内存使用
+    # return torch.tensor(tensor.data, device=dynamic.device)
+    # 避免额外的计算开销和不必要的内存使用
+    return new_dynamic.clone().detach().to(device=dynamic.device)
+
 
 def reward(static, tour_indices):  # 这个是旧的reward，,depot_number参数没用
     """
@@ -939,6 +665,7 @@ def reward(static, tour_indices):  # 这个是旧的reward，,depot_number参数
     for tour_indices_item in tour_indices:
         # 将索引转换回旅行路线
         idx = tour_indices_item.unsqueeze(1).expand(-1, static.size(1), -1)
+        # print("reward 内的原始idx是：\n",idx)
         tour = torch.gather(static.data, 2, idx).permute(0, 2, 1)
 
         # 确保我们总是返回到仓库 - 注意额外的 concat
@@ -1190,6 +917,9 @@ def validate(data_loader, actor, reward_fn, render_fn=None, save_dir='.',
     return np.mean(rewards),rewards
 
 
+
+
+
 def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
           render_fn, batch_size, actor_lr, critic_lr, max_grad_norm,
           depot_num, **kwargs):
@@ -1201,7 +931,7 @@ def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
     now=datetime.datetime.now()
     format_now='%s' % now.month+"_"+'%s' % now.day+"_"+'%s' % now.hour+"_"+'%s' % now.minute+"_"+'%s'%now.second
 
-    save_dir = os.path.join(current_dir, task +"2_train_log", '%d' % num_city, format_now) # ./vrp/numnode/time
+    save_dir = os.path.join(current_dir, task +"_train_log_shared_depot", '%d' % num_city, format_now) # ./vrp/numnode/time
     # 创建能够保存训练中checkpoint的文件夹
     checkpoint_dir = os.path.join(save_dir, 'train_checkpoints') # /vrp/numnode/time/checkpoints
     if not os.path.exists(checkpoint_dir):
@@ -1368,7 +1098,6 @@ def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
     plt.savefig(os.path.join(save_dir, "All_epoch_reward.jpg"))
     # plt.show()
 
-
 def run_vrp(args):
     # Goals from paper: 【注意这是纯vrp问题，没有加上路径损耗。可不能直接比……】
     # VRP10, Capacity 20:  4.84  (Greedy)
@@ -1394,12 +1123,12 @@ def run_vrp(args):
                     args.hidden_size,
                     car_load,
                     args.depot_num,
-                    # train_data.update_dynamic2tem, # 把函数弄出来了
-                    update_dynamic2_outside, # todo 为什么不直接做成actor的成员函数！！。
-                    # train_data.update_mask2,# 把函数弄出来了
-                    update_mask2_outside,
-                    # train_data.node_distance2, # 把函数弄出来了
-                    node_distance2_outside,
+                    # train_data.update_dynamic, # 把函数弄出来了
+                    update_dynamic_outside,
+                    # train_data.update_mask,# 把函数弄出来了
+                    update_mask_outside,
+                    node_distance_outside,
+                    # train_data.node_distance, # 把函数弄出来了
                     args.num_layers,
                     args.dropout).to(device)
 
@@ -1407,7 +1136,7 @@ def run_vrp(args):
     critic = StateCritic(STATIC_SIZE, DYNAMIC_SIZE, args.hidden_size).to(device)
 
     if args.checkpoint:  # 读取之前保存的模型。
-        print("args.checkpoint:已经有ckpt，开始读取。")
+        print(f"args.checkpoint:已经有ckpt，开始读取:{args.checkpoint}")
         path = os.path.join(args.checkpoint, 'actor.pt')
         actor.load_state_dict(torch.load(path, device))  # load_state_dict：加载模型参数
         path = os.path.join(args.checkpoint, 'critic.pt')
@@ -1416,6 +1145,7 @@ def run_vrp(args):
         print("No args.checkpoint：模型从0初始化。")
 
     if not args.test:
+
         # 生成随机训练数据集(1000000)，验证数据集(1000)
         train_data = VehicleRoutingDataset(args.train_size,
                                            args.num_city,
@@ -1437,8 +1167,6 @@ def run_vrp(args):
         kwargs = vars(args)
         kwargs['train_data'] = train_data
         kwargs['valid_data'] = valid_data
-        # kwargs['reward_fn'] = vrp.reward # colab上不用vrp句柄
-        # kwargs['render_fn'] = vrp.render
         kwargs['reward_fn'] = reward
         kwargs['render_fn'] = render
 
@@ -1451,6 +1179,7 @@ def run_vrp(args):
         print("训练结束。")
 
     print(f"args.valid_size={args.valid_size}")
+
     print("Test:")
     # 生成测试数据，大小于验证数据一致(1000)
     test_data = VehicleRoutingDataset(args.valid_size,
@@ -1462,12 +1191,12 @@ def run_vrp(args):
                                       args.depot_num)
 
 
-
-    test_dir = 'test_picture'
+    test_dir = 'test_picture_shared_depot'
     test_loader = DataLoader(test_data, args.batch_size, False, num_workers=0)
 
     test_out,test_reward = validate(test_loader, actor, reward, render, test_dir, num_plot=5, depot_number=args.depot_num)
     print('Run DRL:\nAverage tour length in test set: ', test_out)
+
     reward_greedy=run_greedy_VRP(test_data.static, args.num_city, args.depot_num)
 
     # print("\nRun data analysis:")
@@ -1477,8 +1206,8 @@ def run_vrp(args):
     # analysis.run_analysis()
     return test_reward,reward_greedy
 
-
 def test_generalization():
+    print("Doing generalization test....")
     parser = argparse.ArgumentParser(description='Combinatorial Optimization')
     parser.add_argument('--seed', default=1234, type=int)
     parser.add_argument('--checkpoint', default=None)
@@ -1490,20 +1219,19 @@ def test_generalization():
     parser.add_argument('--actor_lr', default=1e-4, type=float)  # 学习率，现在在训练第4epoch，我手动改了一下
     parser.add_argument('--critic_lr', default=1e-4, type=float)
     parser.add_argument('--max_grad_norm', default=2., type=float)
-    parser.add_argument('--batch_size', default=64, type=int)  # fixme#########################
-    # parser.add_argument('--batch_size', default=8, type=int) ##########
+    parser.add_argument('--batch_size', default=64, type=int)
     parser.add_argument('--hidden', dest='hidden_size', default=128, type=int)
     parser.add_argument('--dropout', default=0.1, type=float)
     parser.add_argument('--layers', dest='num_layers', default=1, type=int)
-    parser.add_argument('--train-size', default=1000000, type=int)  # fixme!!!!!!!!!!!!
-    # parser.add_argument('--train-size', default=10, type=int)  # fixme!!!!!!!!!!!!####################
-    parser.add_argument('--valid-size', default=500, type=int)
+    parser.add_argument('--train-size', default=-1, type=int)
+    parser.add_argument('--valid-size', default=10, type=int)
     parser.add_argument('--depot_num', default=20, type=int)  # todo ###############
     # 解析为args
-    args = parser.parse_known_args()[0]  # colab环境跑使用
+    args = parser.parse_known_args()[0]  # colab环境跑使用 使用0的意思是只取上面已知的argument。如果运行的时候给多了，就放在[1]里面
 
     args.test = True
-    args.checkpoint = "trained_model"  # 这是lw的本地文件夹 todo ………………重新开始训练。
+    # args.checkpoint = "trained_model"  # 这是lw的本地文件夹 todo ………………重新开始训练。
+    args.checkpoint = "trained_model\\total_shared_epoch6"
 
     avg_R_RL,avg_R_Greedy=[],[]
     tower_list=list(range(50,301,50))
@@ -1514,54 +1242,53 @@ def test_generalization():
         avg_R_Greedy.append(np.mean(reward_greedy))
     plt.plot(tower_list,avg_R_RL,label="RL average path")
     plt.plot(tower_list,avg_R_Greedy,label="Greedy average path")
-    plt.savefig("Greedy_VS_RL2.png")
+    plt.legend() # 让label显示
+    plt.savefig("Greedy_VS_shared_RL.png",dpi=300)
     plt.show()
 
 
+
 if __name__ == '__main__':
-    # 命令行参数解析器对象 parser.参数是按顺序的。。。。
+    # 建了一个命令行参数解析器对象 parser
     parser = argparse.ArgumentParser(description='Combinatorial Optimization')
     parser.add_argument('--seed', default=1234, type=int)
     parser.add_argument('--checkpoint', default=None)
     parser.add_argument('--test', action='store_true', default=False)
     parser.add_argument('--task', default='vrp')
-    parser.add_argument('--nodes', dest='num_city', default=50, type=int)  #todo 对齐#########
+    parser.add_argument('--nodes', dest='num_city', default=200, type=int)  #todo 对齐#########
     # parser.add_argument('--actor_lr', default=5e-4, type=float)
     # parser.add_argument('--critic_lr', default=5e-4, type=float)
     parser.add_argument('--actor_lr', default=1e-4, type=float)  # 学习率，现在在训练第4epoch，我手动改了一下
     parser.add_argument('--critic_lr', default=1e-4, type=float)
     parser.add_argument('--max_grad_norm', default=2., type=float)
     parser.add_argument('--batch_size', default=64, type=int)  #fixme#########################
-    # parser.add_argument('--batch_size', default=8, type=int) ##########
     parser.add_argument('--hidden', dest='hidden_size', default=128, type=int)
     parser.add_argument('--dropout', default=0.1, type=float)
     parser.add_argument('--layers', dest='num_layers', default=1, type=int)
     parser.add_argument('--train-size',default=1000000, type=int) #fixme!!!!!!!!!!!!
-    # parser.add_argument('--train-size', default=10, type=int)  # fixme!!!!!!!!!!!!####################
     parser.add_argument('--valid-size', default=1000, type=int)
-    parser.add_argument('--depot_num', default=5, type=int)  # todo ###############
+    parser.add_argument('--depot_num', default=20, type=int)  # todo ###############
     # 解析为args
     # args = parser.parse_args() #若在本地跑请使用本行代码
     args = parser.parse_known_args()[0]  # colab环境跑使用
 
     # --------------------------------------------------------------------
     args.test = True
-    # args.test = False # todo ###################
+    args.test = False # todo ###################
     # --------------------------------------------------------------------
     # # 设置checkpoint路径
-    # args.checkpoint ="/content/drive/MyDrive/"
-    # args.checkpoint = "test4"  # 这是lw的google模型文件夹名
-    args.checkpoint = "trained_model\\trained_w200"  # 这是lw的本地文件夹 todo ………………重新开始训练。
+    # args.checkpoint = "trained_model"  # todo ………………
+    # args.checkpoint = "trained_model\\trained_w200"
+    args.checkpoint = os.path.join("trained_model","total_shared_epoch6")
 
-    # todo：测试泛化性【画出图片吧】。和更多方法比较、混合训练【向下兼容的泛化性会更好吗：会】!!!测试
-    #  todo ：试试直接用大数据来从0训练。？？？
-    # todo:  抢夺决策？？？怎么写实现：1，获取所有无人机下一步的距离（已经确定可行）然后按照距离执行（？会重复吧喂）
-    # todo:  随机事件（这个太难写了）
-
+    # todo 这个文件是DRL的复制版本。测试一下如果没问题的话，直接在主函数，actor创建之前写一个控制“共享仓库与否”的开关就好了。
+    #   【代码还要重构，方便增加共享、非共享、greedy的比较图片。
+    # todo 验证“half shared”思路是否可行。
+    # todo 话说还没有改过随机数种子。
 
     if args.task == 'vrp':
-        run_vrp(args)
-        # test_generalization()
+        run_vrp(args) # todo 现在没开和贪心的分析（p检验）
+        # test_generalization() # 泛化性测试。(泛化性测试包括Greedy对比图）
         print("Running ends.")
     else:
         raise ValueError('Task <%s> not understood' % args.task)
