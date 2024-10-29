@@ -9,8 +9,8 @@ Original file is located at
 #DRL4VRP
 """
 
-from google.colab import drive
-drive.mount('/content/drive')
+# from google.colab import drive
+# drive.mount('/content/drive')
 
 """##modle.py
 这段代码定义了一个用于解决旅行商问题（TSP）和车辆路径问题（VRP）的深度强化学习模型。它包括编码器、注意力机制和指针网络，用于从给定的城市坐标中学习构建最短路径的策略。模型使用PyTorch框架构建，支持在GPU上运行以加速训练过程。
@@ -20,11 +20,9 @@ drive.mount('/content/drive')
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import copy
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # %matplotlib inline
 
-# device = torch.device('cpu')
 
 
 class Encoder(nn.Module):
@@ -262,12 +260,8 @@ class DRL4TSP(nn.Module):
             # 指针网络。里面包含GRU
             probs, last_hh = self.pointer(static_hidden, dynamic_hidden, decoder_hidden,
                                           last_hh)  # 得到下一个点的（未mask）概率分布和隐状态。
-            # print("probs1",probs)
             probs = F.softmax(probs + mask.log(), dim=1)  # mask操作+softmax
-            # print("probs2",probs)
-            # print("car_id",car_id)
-            # print("mask",mask)
-            # print("mask.log()",mask.log())
+
             # When training, sample the next step according to its probability.
             # During testing, we can take the greedy approach and choose highest
             if self.training:
@@ -1497,7 +1491,7 @@ if __name__ == '__main__':
     parser.add_argument('--checkpoint', default=None) # …………………………………………这个还没有设置！！
     parser.add_argument('--test', action='store_true', default=False)
     parser.add_argument('--task', default='vrp')
-    parser.add_argument('--nodes', dest='num_nodes', default=50, type=int)##############
+    parser.add_argument('--nodes', dest='num_nodes', default=200, type=int)##############
     # parser.add_argument('--actor_lr', default=5e-4, type=float)
     # parser.add_argument('--critic_lr', default=5e-4, type=float)
     parser.add_argument('--actor_lr', default=1e-4, type=float) # 学习率，现在在训练第4epoch，我手动改了一下。……………………
@@ -1509,8 +1503,8 @@ if __name__ == '__main__':
     parser.add_argument('--layers', dest='num_layers', default=1, type=int)
     #parser.add_argument('--train-size',default=1000000, type=int)#fixme!!!!!!!!!!!!
     parser.add_argument('--train-size',default=100000, type=int)#fixme!!!!!!!!!!!!####################
-    parser.add_argument('--valid-size', default=100, type=int)
-    parser.add_argument('--depot_num', default=5, type=int)###############
+    parser.add_argument('--valid-size', default=1000, type=int)
+    parser.add_argument('--depot_num', default=10, type=int)###############
     #解析为args
     #args = parser.parse_args() #若在本地跑请使用本行代码
     args = parser.parse_known_args()[0] # colab环境跑使用
@@ -1520,326 +1514,10 @@ if __name__ == '__main__':
     args.test=True
     # --------------------------------------------------------------------
 
-    #print('NOTE: SETTTING CHECKPOINT: ')
-    # args.checkpoint = os.path.join('vrp', '10', '12_59_47.350165' + os.path.sep)
-    # print(args.checkpoint)
-
     # # 设置checkpoint路径######################################
-    # args.checkpoint = '/content/drive/MyDrive/vrp/100/12_57_12.349803/checkpoints/1' # 这是黎的
-    # args.checkpoint ="/content/drive/MyDrive/test4"  # 这是lw的
-    #args.checkpoint ="/content/drive/MyDrive/"
-    # if args.task == 'tsp':
-    #     train_tsp(args)
-    # elif args.task == 'vrp':
-    #     train_vrp(args)
+    args.checkpoint = "trained_model/old"  # 这是lw的本地文件夹 todo
+
     if args.task == 'vrp':
         train_vrp(args)
     else:
         raise ValueError('Task <%s> not understood'%args.task)
-
-test="{\"k\":\"tsx\"}"
-print(test)
-a=eval(test)
-
-print(type(a))
-print(a)
-
-"""# 画图和备用代码"""
-
-#%matplotlib inline
-#import matplotlib
-#import matplotlib.pyplot as plt
-#x=[1,2,3]
-#y=[3,4,5]
-#plt.plot(x,y)
-#plt.show()
-
-# import numpy as np
-# import matplotlib.pyplot as plt
-# from matplotlib import animation, rc
-# from IPython.display import HTML
-# class testAnimation:
-#     def __init__(self):
-# # First set up the figure, the axis, and the plot element we want to animate
-#         self.fig, ax = plt.subplots()
-#         plt.close()
-#         ax.set_xlim(( 0, 2))
-#         ax.set_ylim((-2, 2))
-#         self.line, = ax.plot([], [], lw=2)
-# # initialization function: plot the background of each frame
-#     def init(self):
-#         self.line.set_data([], [])
-#         return (self.line,)
-# # animation function. This is called sequentially
-#     def animate(self, i):
-#         x = np.linspace(0, 2, 1000)
-#         y = np.sin(2 * np.pi * (x - 0.01 * i))
-#         self.line.set_data(x, y)
-#         return (self.line,)
-#     def draw(self):
-#         global anim
-#         anim = animation.FuncAnimation(self.fig, self.animate, init_func=self.init,
-#         frames=100, interval=100, blit=True)
-
-# vis = testAnimation()
-# vis.draw()
-#     # Note: below is the part which makes it work on Colab
-# rc('animation', html='jshtml')
-# anim
-
-"""## 备用"""
-
-# num_depots=3
-# dynamic=torch.tensor([[[ 0.7333,  0.7333,  0.7333,  0.7333,  0.7333,  0.7333,  0.7333,
-#            0.7333,  0.7333,  0.7333,  0.7333,  0.7333,  0.7333,  0.7333,
-#            0.7333,  0.7333,  0.7333,  0.7333,  0.7333,  0.7333,  0.7333,
-#            0.7333,  0.7333],
-#          [ 0.0000, -1.0000, -1.0000,  0.0000,  0.2667,  0.0000,  0.0333,
-#            0.0000,  0.1333,  0.1333,  0.3000,  0.0000,  0.0000,  0.1667,
-#            0.0000,  0.0333,  0.0000,  0.0000,  0.0000,  0.2333,  0.0000,
-#            0.0000,  0.3000]],
-
-#         [[ 0.6667,  0.6667,  0.6667,  0.6667,  0.6667,  0.6667,  0.6667,
-#            0.6667,  0.6667,  0.6667,  0.6667,  0.6667,  0.6667,  0.6667,
-#            0.6667,  0.6667,  0.6667,  0.6667,  0.6667,  0.6667,  0.6667,
-#            0.6667,  0.6667],
-#          [-1.0000, -1.0000,  0.0000,  0.2667,  0.0000,  0.2333,  0.0000,
-#            0.1000,  0.0000,  0.0333,  0.0000,  0.0000,  0.2000,  0.2000,
-#            0.2333,  0.0667,  0.2667,  0.2000,  0.0000,  0.0000,  0.0000,
-#            0.0000,  0.0000]],
-
-#         [[ 1.0000,  1.0000,  1.0000,  1.0000,  1.0000,  1.0000,  1.0000,
-#            1.0000,  1.0000,  1.0000,  1.0000,  1.0000,  1.0000,  1.0000,
-#            1.0000,  1.0000,  1.0000,  1.0000,  1.0000,  1.0000,  1.0000,
-#            1.0000,  1.0000],
-#          [ 0.0000,  0.0000, -1.0000,  0.1333,  0.0333,  0.0000,  0.3000,
-#            0.0000,  0.0000,  0.1333,  0.0333,  0.0000,  0.0000,  0.0000,
-#            0.2000,  0.0000,  0.0333,  0.1000,  0.3000,  0.0000,  0.0000,
-#            0.2000,  0.1333]],
-
-#         [[ 1.0000,  1.0000,  1.0000,  1.0000,  1.0000,  1.0000,  1.0000,
-#            1.0000,  1.0000,  1.0000,  1.0000,  1.0000,  1.0000,  1.0000,
-#            1.0000,  1.0000,  1.0000,  1.0000,  1.0000,  1.0000,  1.0000,
-#            1.0000,  1.0000],
-#          [ 0.0000, -1.0000, -1.0000,  0.3000,  0.3000,  0.0000,  0.0667,
-#            0.1000,  0.2000,  0.0000,  0.0000,  0.1667,  0.0000,  0.0000,
-#            0.0000,  0.0000,  0.0000,  0.0667,  0.0000,  0.0000,  0.2667,
-#            0.1667,  0.0000]]])
-# chosen_idx=torch.tensor([[11],
-#         [ 6],
-#         [ 0],
-#         [ 0]])
-
-
-# def update_mask(dynamic, chosen_idx=None):
-#   """更新用于隐藏非有效状态的掩码。
-
-#   参数
-#   ----------
-#   dynamic: torch.autograd.Variable 的大小为 (1, num_feats, seq_len)
-#   """
-#   # 将浮点数转换为整数进行计算
-#   loads = dynamic.data[:, 0]  # (batch_size, seq_len)
-#   demands = dynamic.data[:, 1]  # (batch_size, seq_len)
-#   print("loads",loads)
-#   print("demands",demands)
-
-#   # 如果没有剩余的正需求量，我们可以结束行程。
-#   # 注意，第一个节点是仓库，它始终有负需求量
-
-#   if demands.eq(0).all():
-#       return demands * 0.
-
-#   # 否则，我们可以选择去任何需求量 <load 且不为0 的地方
-#   new_mask = demands.ne(0) * demands.lt(loads)
-#   print("newmask",new_mask)
-#   # 我们应该避免连续两次前往仓库
-#   # repeat_home = chosen_idx.ne(0)
-#   # if repeat_home.any():
-#   #     new_mask[repeat_home.nonzero(), 0] = 1.
-#   # if (~repeat_home).any():
-#   #     new_mask[(~repeat_home).nonzero(), 0] = 0.
-#   ##############################
-#   for depot_idx in range(num_depots):
-#       repeat_home = chosen_idx == depot_idx
-#       if repeat_home.any():
-#         print(repeat_home)
-#         print(repeat_home.nonzero())
-#         new_mask[repeat_home.squeeze().nonzero(),:num_depots] = 0
-#         print("newmask111",new_mask)
-#   ##############################
-
-#   # ...除非我们在等待小批量中的其他样本完成
-#   has_no_load = loads[:, 0].eq(0).float() # 仓库load=车load 正好为0
-#   #has_no_demand = demands[:, 1:].sum(1).eq(0).float() # 这里的1要改/所有city都没有demand
-#   has_no_demand = demands[:, num_depots:].sum(1).eq(0).float() # 所有city都没有demand  转1和0
-
-#   combined = (has_no_load + has_no_demand).gt(0) # combine zero：该样本有的 city有 demand 并且 车load不等于0
-#   #print("com",combined)
-#   #在无demand下，限制小车不要在仓库之间乱跑
-#   if combined.any():  # nonzero：要么车有load=0 要么所有city无demand （防止小车正好完成任务被卡在外面）
-#       # 首先，我们将所有节点的掩码设置为0，防止访问
-#       new_mask[combined.nonzero(), :] = 0.
-#       # 对于每个样本，如果它已经在仓库中，我们只允许它访问当前所在的仓库
-#       #for sample_idx in combined.nonzero().squeeze():
-#       for sample_idx in combined.nonzero():
-#           current_location = chosen_idx[sample_idx]
-#           if current_location < num_depots:  # 如果当前在仓库
-#               # 仅允许访问当前所在的仓库
-#               new_mask[sample_idx, current_location] = 1.
-#           else:
-#               # 如果不在仓库，但没有需求且载重为0，则允许访问任一仓库
-#               new_mask[sample_idx, :num_depots] = 1.
-
-#   return new_mask.float()
-
-# a=update_mask(dynamic,chosen_idx)
-# print(a)
-
-# num_depots=3
-# dynamic=torch.tensor([[[ 5.0000,  5.0000,  5.0000,  5.0000,  5.0000,  5.0000,  5.0000,
-#            5.0000,  5.0000,  5.0000,  5.0000,  5.0000,  5.0000,  5.0000,
-#            5.0000,  5.0000,  5.0000,  5.0000,  5.0000,  5.0000,  5.0000,
-#            5.0000,  5.0000],
-#          [-1.0000,  0.0000,  0.0000,  0.2333,  0.1333,  0.0333,  0.1000,
-#            0.1000,  0.3000,  0.0333,  0.0333,  0.1667,  0.1333,  0.0333,
-#            0.1000,  0.1333,  0.1333,  0.0000,  0.0667,  0.2667,  0.2333,
-#            0.2667,  0.0667]],
-
-#         [[ 5.0000,  5.0000,  5.0000,  5.0000,  5.0000,  5.0000,  5.0000,
-#            5.0000,  5.0000,  5.0000,  5.0000,  5.0000,  5.0000,  5.0000,
-#            5.0000,  5.0000,  5.0000,  5.0000,  5.0000,  5.0000,  5.0000,
-#            5.0000,  5.0000],
-#          [ 0.0000,  0.0000,  0.0000,  0.2333,  0.0333,  0.2333,  0.3000,
-#            0.1000,  0.3000,  0.2333,  0.0667,  0.1333,  0.2333,  0.2667,
-#            0.2667,  0.2333,  0.0333,  0.2667,  0.1667,  0.1000,  0.1000,
-#            0.1000,  0.1333]],
-
-#         [[ 5.0000,  5.0000,  5.0000,  5.0000,  5.0000,  5.0000,  5.0000,
-#            5.0000,  5.0000,  5.0000,  5.0000,  5.0000,  5.0000,  5.0000,
-#            5.0000,  5.0000,  5.0000,  5.0000,  5.0000,  5.0000,  5.0000,
-#            5.0000,  5.0000],
-#          [-1.0000,  0.0000,  0.0000,  0.0667,  0.1333,  0.2000,  0.1667,
-#            0.2000,  0.2333,  0.2333,  0.1667,  0.1333,  0.0000,  0.3000,
-#            0.2667,  0.2000,  0.2667,  0.2333,  0.3000,  0.3000,  0.2000,
-#            0.2000,  0.1667]],
-
-#         [[ 5.0000,  5.0000,  5.0000,  5.0000,  5.0000,  5.0000,  5.0000,
-#            5.0000,  5.0000,  5.0000,  5.0000,  5.0000,  5.0000,  5.0000,
-#            5.0000,  5.0000,  5.0000,  5.0000,  5.0000,  5.0000,  5.0000,
-#            5.0000,  5.0000],
-#          [-1.0000,  0.0000,  0.0000,  0.0667,  0.1667,  0.2667,  0.2000,
-#            0.1000,  0.2333,  0.3000,  0.1000,  0.2000,  0.3000,  0.1333,
-#            0.0667,  0.2333,  0.0000,  0.1667,  0.2000,  0.1333,  0.1333,
-#            0.1667,  0.3000]]])
-# chosen_idx=torch.tensor([[1],
-#         [1],
-#         [1],
-#         [1]])
-# chosen_distance=torch.tensor([[0.0000, 0.0000, 0.0000, 0.7403, 0.8914, 0.8326, 0.6198, 0.3796, 0.9814,
-#          0.1735, 0.9327, 0.8920, 0.7262, 0.7788, 0.8985, 1.0874, 1.6204, 0.8345,
-#          1.1130, 0.0995, 0.6817, 0.5892, 1.1120],
-#         [0.0000, 0.0000, 0.0000, 0.9790, 0.6958, 0.5676, 0.9712, 0.7434, 0.5077,
-#          1.3797, 0.9769, 0.8454, 0.8500, 0.9196, 0.9119, 0.7212, 1.0000, 1.5102,
-#          0.9318, 0.9872, 0.8995, 0.9728, 0.9983],
-#         [0.0000, 0.0000, 0.0000, 0.6408, 0.9975, 0.9278, 1.1328, 1.5062, 0.2557,
-#          0.6858, 0.4791, 0.5085, 1.0822, 0.8387, 0.8809, 0.9228, 0.3629, 0.9491,
-#          0.8786, 0.2945, 1.2904, 0.9897, 1.2402],
-#         [0.0000, 0.0000, 0.0000, 0.9052, 1.1498, 0.0324, 0.9071, 0.3833, 0.6725,
-#          0.9689, 0.0441, 0.3848, 0.9444, 1.1844, 1.1834, 1.1002, 1.0670, 0.8867,
-#          1.2298, 0.9534, 0.8927, 1.1831, 0.9284]])
-
-# def update_mask(dynamic,chosen_idx=None):
-#     """更新用于隐藏非有效状态的掩码。
-
-#     参数
-#     ----------
-#     dynamic: torch.autograd.Variable 的大小为 (1, num_feats, seq_len)
-#     """
-#     #print("update_mask里的:dynamic",dynamic)
-#     #print("update_mask:chosen_idx 当前所在位置是：",chosen_idx)
-#     #print("update_mask:distance",distance)
-#     # 将浮点数转换为整数进行计算
-#     loads = dynamic.data[:, 0]  # (batch_size, seq_len)
-#     demands = dynamic.data[:, 1]  # (batch_size, seq_len)
-#     # nodedistance=distance+distance[:,-1,:].unsqueeze(1)# 节点之间的距离加上与最近仓库的距离。
-#     # nodedistance = nodedistance[:, :-1, :]
-#     # nodedistance[:, :, :self.num_depots] = 0
-#     # chosen_distance = nodedistance[torch.arange(nodedistance.size(0)), chosen_idx.squeeze(1)]
-#     #print("update_mask:chosen_distance",chosen_distance)
-#     # 如果没有剩余的正需求量，我们可以结束行程。
-#     # 注意，第一个节点是仓库，它始终有负需求量
-#     if demands.eq(0).all():
-#         return demands * 0.
-
-#     # 否则，我们可以选择去任何需求量 <load 且不为0 的地方
-#     new_mask = demands.ne(0) * demands.lt(loads-chosen_distance)
-#     #print("update_mask:loads-chosen_distance",loads-chosen_distance)
-#     #print("update_mask:demands.lt(loads-chosen_distance)",demands.lt(loads-chosen_distance))
-#     #print("update_mask:demands.ne(0) * demands.lt(loads-chosen_distance)",demands.ne(0) * demands.lt(loads-chosen_distance))
-#     print("new_mask1",new_mask)
-#     # 我们应该避免连续两次前往仓库
-#     # repeat_home = chosen_idx.ne(0)
-#     # if repeat_home.any():
-#     #     new_mask[repeat_home.nonzero(), 0] = 1.
-#     # if (~repeat_home).any():
-#     #     new_mask[(~repeat_home).nonzero(), 0] = 0.
-#     ##############################fixme!!!!!!!!!
-#     for depot_idx in range(num_depots):
-#         repeat_home = chosen_idx == depot_idx
-#         if repeat_home.any():
-#             new_mask[repeat_home.squeeze().nonzero(),:num_depots] = 0
-#     ##############################
-
-#     # ...除非我们在等待小批量中的其他样本完成
-#     has_no_load = loads[:, 0].eq(0).float() # 仓库load=车load 正好为0
-#     #has_no_demand = demands[:, 1:].sum(1).eq(0).float() # 这里的1要改/所有city都没有demand
-#     has_no_demand = demands[:, num_depots:].sum(1).eq(0).float() # 所有city都没有demand  转1和0
-
-#     print("new_mask2",new_mask)
-
-#     combined = (has_no_load + has_no_demand).gt(0) # combine zero：该样本有的 city有 demand 并且 车load不等于0
-#     #在无demand下，限制小车不要在仓库之间乱跑
-#     if combined.any():  # nonzero：要么车有load=0 要么所有city无demand （防止小车正好完成任务被卡在外面）
-#         # 首先，我们将所有节点的掩码设置为0，防止访问
-#         new_mask[combined.nonzero(), :] = 0.
-#         # 对于每个样本，如果它已经在仓库中，我们只允许它访问当前所在的仓库
-#         #for sample_idx in combined.nonzero().squeeze():
-#         for sample_idx in combined.nonzero():
-#             current_location = chosen_idx[sample_idx]
-#             if current_location < num_depots:  # 如果当前在仓库
-#                 # 仅允许访问当前所在的仓库
-#                 new_mask[sample_idx, current_location] = 1.
-#             else:
-#                 # 如果不在仓库，但没有需求且载重为0，则允许访问任一仓库
-#                 new_mask[sample_idx, :num_depots] = 1.
-
-#     print("new_mask3",new_mask)
-#     return new_mask.float()
-
-
-# a=update_mask(dynamic,chosen_idx)
-
-# import torch
-
-
-
-# num_car = 3
-# batch_size = 4
-# # tour_idx, tour_logp = [[] for i in range(num_car)], []
-# tour_logp = []
-# # 使用arange生成初始depot，然后直接调整形状
-# initial_depot = torch.arange(num_car).view(num_car, 1, 1)
-
-# # 使用expand复制到所需的批处理大小
-# initial_depot = initial_depot.expand(num_car, 1, batch_size)
-
-# #print(initial_depot)
-# tour_idx=initial_depot.tolist()
-# # tour_idx=[[torch.tensor(tour_idx[i][0])] for i in range(num_car)]
-# # tour_idx=[[torch.unsqueeze(torch.tensor(tour_idx[i][0]),1)] for i in range(num_car)]
-
-# tour_idx=[[torch.tensor(tour_idx[i][0]).unsqueeze(1)] for i in range(num_car)]
-
-# print(tour_idx)
-# print(tour_idx[0][0].size())

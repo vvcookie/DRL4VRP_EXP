@@ -1,10 +1,10 @@
 import  numpy as np
-from scipy import stats
 
 class Reward_Collect:
     def __init__(self):
         self.reward_greedy=[]
         self.reward_RL=[]
+
 
     def get_mean(self):
         print(f"Greedy reward mean: {np.mean(self.reward_greedy)}")
@@ -25,6 +25,7 @@ class Reward_Collect:
 
 
     def independent_T_test(self):
+        from scipy import stats
         # 独立2个样本t检验
         sample1 = np.asarray(self.reward_greedy)
         sample2 = np.asarray(self.reward_RL)
@@ -39,6 +40,7 @@ class Reward_Collect:
         '''
         成对样本t检验
         '''
+        from scipy import stats
         sample1 = np.asarray(self.reward_greedy)
         sample2 = np.asarray(self.reward_RL)
         r = stats.ttest_rel(sample1, sample2)
@@ -53,6 +55,7 @@ class Reward_Collect:
         适用于不成对。The Mann-Whitney U test is a non-parametric version of the t-test for independent samples.
         When the means of samples from the populations are normally distributed, consider scipy. stats. ttest_ind.
         """
+        from scipy import stats
         sample1 = np.asarray(self.reward_greedy)
         sample2 = np.asarray(self.reward_RL)
         res = stats.mannwhitneyu(sample1, sample2)
@@ -66,6 +69,7 @@ class Reward_Collect:
         '''
         适用于成对。 It is a non-parametric version of the paired T-test.
         '''
+        from scipy import stats
         sample1 = np.asarray(self.reward_greedy)
         sample2 = np.asarray(self.reward_RL)
         res = stats.wilcoxon(sample1, sample2)
@@ -95,7 +99,6 @@ class Reward_Collect:
         self.paired_T_test()
         self.wilcoxon_rank_sum_test()
         self.wilcoxon_signed_rank_test()
-
         path="data_reward.csv"
         self.save_reward(path)
 
