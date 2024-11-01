@@ -1261,21 +1261,97 @@ def run_exp(share_depot, args):
 
     test_loader = DataLoader(test_data, args.batch_size, False, num_workers=0)
 
-    # test_out, test_reward = validate(test_loader, actor, reward, render, test_dir, num_plot=5,
-    #                                  depot_number=args.depot_num)
-    test_reward=[1]
-    # print('DRL:Average tour length in test set: ', test_out)
-    reward_greedy = run_greedy_VRP(test_data.static, args.num_city, args.depot_num,share=share_depot)
+    test_out, test_reward = validate(test_loader, actor, reward, render, test_dir, num_plot=5,
+                                     depot_number=args.depot_num)
+    # print("DRL:Average tour length in test set: ", test_out)
+    # reward_greedy = run_greedy_VRP(test_data.static, args.num_city, args.depot_num,share=share_depot)
 
     # print("\nRun data analysis:")
     # analysis = data_analysis.Reward_Collect()
     # analysis.reward_RL=test_reward
     # analysis.reward_greedy = reward_greedy
     # analysis.run_analysis()
-    return test_reward, reward_greedy
+    return test_reward #, reward_greedy
+
+def run_multi_alg_test(share_depot, args, algorithm):
+    '''
+    本函数内部生成测试数据集。
+    返回的是{算法：测试结果} 字典
+    '''
+    print("Shared depot.")
+    print(f"args.num_city={args.num_city}")
+    print(f"args.depot_num={args.depot_num}")
+    print(f"开始测试：args.valid_size={args.valid_size}")
+
+    max_load = -1  #LOAD_DICT[args.num_city] # todo没事现在maxload已经废弃了
+    map_size = 1  # fixme 原代码地图大小默认1，不需要指定。而且本来产生坐标的时候就是0-1范围的浮点。
+    car_load = 2 * map_size * 1.4  # 测试
+    MAX_DEMAND = 0.1  # 测试 # todo 目前是固定值。
+
+    # 生成测试数据，大小于验证数据一致(1000)
+    test_data = VehicleRoutingDataset(args.valid_size,
+                                      args.num_city,
+                                      max_load,
+                                      car_load,
+                                      MAX_DEMAND,
+                                      args.seed + 2,
+                                      args.depot_num)
+
+    # print('DRL:Average tour length in test set: ', test_out)
+
+    algorithm_result={}
+
+    # -----------------------------------------------------------------Greedy
+    if "greedy" in algorithm or "Greedy" in algorithm:
+        reward_greedy = run_greedy_VRP(test_data.static, args.num_city, args.depot_num,share=share_depot)
+        algorithm_result["Greedy"]=reward_greedy
+
+    #------------------------------------------------------------------RL
+    if "RL" in algorithm:
+        STATIC_SIZE = 2  # (x, y)
+        DYNAMIC_SIZE = 2  # (load, demand)
+        if share_depot:
+            actor = DRL4TSP(STATIC_SIZE,
+                            DYNAMIC_SIZE,
+                            args.hidden_size,
+                            car_load,
+                            args.depot_num,
+                            update_dynamic_shared,
+                            update_mask_shared,
+                            node_distance_shared,
+                            args.num_layers,
+                            args.dropout).to(device)
+        else:
+            actor = DRL4TSP(STATIC_SIZE,
+                            DYNAMIC_SIZE,
+                            args.hidden_size,
+                            car_load,
+                            args.depot_num,
+                            update_dynamic_independent,
+                            update_mask_independent,
+                            node_distance_independent,
+                            args.num_layers,
+                            args.dropout).to(device)
+
+        print(f"RL测试模式：读取ckpt:{args.checkpoint}")
+        path = os.path.join(args.checkpoint, 'actor.pt')
+        actor.load_state_dict(torch.load(path, device))  # load_state_dict：加载模型参数
+
+        if share_depot:
+            test_dir = 'test_picture_shared_depot'
+        else:
+            test_dir = 'test_picture'
+
+        test_loader = DataLoader(test_data, args.batch_size, False, num_workers=0)
+
+        RL_test_out, RL_test_reward = validate(test_loader, actor, reward, render, test_dir, num_plot=5,
+                                         depot_number=args.depot_num)
+        algorithm_result["RL"]= RL_test_reward
+
+    return  algorithm_result
 
 
-def test_generalization_uav_change(share):
+def test_generalization_uav_change(share,run_alg_name):
     parser = argparse.ArgumentParser(description='Combinatorial Optimization')
     parser.add_argument('--seed', default=1234, type=int)
     parser.add_argument('--checkpoint', default=None)
@@ -1303,38 +1379,44 @@ def test_generalization_uav_change(share):
     else:  # not share
         args.checkpoint = os.path.join("trained_model", "trained_w200")
 
-    avg_R_RL, avg_R_Greedy = [], []
 
-    uav_list=list(range(8, 16))
+    print("比较算法：",run_alg_name)
+    reward_list_dict={}
+    # avg_R_RL, avg_R_Greedy = [], []
+
+    uav_list=list(range(2, 5))
     for uav_n in uav_list:
         args.depot_num=uav_n
-        reward_rl, reward_greedy = run_exp(share, args)  # todo 好烦！！！想把Greedy从RL里面抽出来。。。。
-        mean_rl=np.mean(reward_rl)
-        mean_gd=np.mean(reward_greedy)
-        print('DRL:Average tour length in test set: ', mean_rl)
-        print('Greedy:Average tour length in test set: ', mean_gd)
-        avg_R_RL.append(mean_rl)
-        avg_R_Greedy.append(mean_gd)
-    plt.plot(uav_list, avg_R_RL, label="RL average path")
-    plt.plot(uav_list, avg_R_Greedy, label="Greedy average path")
+        reward_dict= run_multi_alg_test(share, args, algorithm=run_alg_name)
+        for key,val in reward_dict.items():
+            reward_list_dict.setdefault(key,[])
+            reward_list_dict[key].append(np.mean(val))# 对每一个算法的reward集合计算平均值。
+
+        # avg_R_RL.append(mean_rl)
+        # avg_R_Greedy.append(mean_gd)
+    for alg in reward_list_dict.keys():
+        plt.plot(uav_list, reward_list_dict[alg], label=f"{alg} average path")
+    # plt.plot(uav_list, avg_R_Greedy, label="Greedy average path")
     plt.legend()
     dir = os.path.join("generalization_test_picture")
     if not os.path.exists(dir):
         os.makedirs(dir)
-    share=str(share)
     plt.savefig(os.path.join(dir, f"Greedy_VS_RL on {args.num_city} tower share={share}.png"))
     # plt.show()
 
     # 储存csv
-    reward_filename = f"Generalization_compare_share {str(share)}.csv"
-    txt = "Greedy,RL\n"
-    for greedy, RL in zip(avg_R_Greedy, avg_R_RL):
-        txt += f"{greedy},{RL}\n"
+    reward_filename = f"Generalization_compare on {args.num_city} share={str(share)}.csv"
+    txt = ",".join(reward_list_dict.keys())+ "\n"
+    # for greedy, RL in zip(avg_R_Greedy, avg_R_RL):
+    for rs in zip(*reward_list_dict.values()):
+        rs = list(map(str, list(rs)))
+        txt += ",".join(rs)
+        txt+="\n"
     with open(reward_filename, "w") as f2:
         f2.write(txt)
     print(txt)
 
-def test_generalization_tower_change(share):
+def test_generalization_tower_change(share,run_alg_name):
     parser = argparse.ArgumentParser(description='Combinatorial Optimization')
     parser.add_argument('--seed', default=1234, type=int)
     parser.add_argument('--checkpoint', default=None)
@@ -1362,20 +1444,20 @@ def test_generalization_tower_change(share):
     else:  # not share
         args.checkpoint = os.path.join("trained_model", "trained_w200")
 
-    avg_R_RL, avg_R_Greedy = [], []
+    # run_alg_name = ["Greedy", "RL"]
+    print("比较算法：", run_alg_name)
+    reward_list_dict = {}
+
     tower_list = list(range(50, 301, 50))
     for tower_n in tower_list:
         args.num_city = tower_n
-        reward_rl, reward_greedy = run_exp(share, args)
-        mean_rl=np.mean(reward_rl)
-        mean_gd=np.mean(reward_greedy)
-        print('DRL:Average tour length in test set: ', mean_rl)
-        print('Greedy:Average tour length in test set: ', mean_gd)
-        avg_R_RL.append(mean_rl)
-        avg_R_Greedy.append(mean_gd)
-
-    plt.plot(tower_list, avg_R_RL, label="RL average path")
-    plt.plot(tower_list, avg_R_Greedy, label="Greedy average path")
+        # reward_rl, reward_greedy = run_exp(share, args)
+        reward_dict= run_multi_alg_test(share, args, algorithm=run_alg_name)
+        for key, val in reward_dict.items():
+            reward_list_dict.setdefault(key, [])
+            reward_list_dict[key].append(np.mean(val))  # 对每一个算法的reward集合计算平均值。
+    for alg in reward_list_dict.keys():
+        plt.plot(tower_list, reward_list_dict[alg], label=f"{alg} average path") # TODO share
     plt.legend()
     dir = os.path.join("generalization_test_picture")
     if not os.path.exists(dir):
@@ -1384,11 +1466,13 @@ def test_generalization_tower_change(share):
     plt.savefig(os.path.join(dir, f"Greedy_VS_RL on {args.depot_num} UAV share={share}.png"))
     # plt.show()
 
-    share = str(share)
-    reward_filename = f"Generalization_compare_share {share}.csv"
-    txt = "Greedy,RL\n"
-    for greedy, RL in zip(avg_R_Greedy, avg_R_RL):
-        txt += f"{greedy},{RL}\n"
+    # 储存csv
+    reward_filename = f"Generalization_on {args.depot_num} share={str(share)}.csv"
+    txt = ",".join(reward_list_dict.keys()) + "\n"
+    for rs in zip(*reward_list_dict.values()):
+        rs = list(map(str, list(rs)))
+        txt += ",".join(rs)
+        txt+="\n"
     with open(reward_filename, "w") as f2:
         f2.write(txt)
     print(txt)
@@ -1446,7 +1530,7 @@ if __name__ == '__main__':
     # print('DRL:Average tour length in test set: ', mean_rl)
     # print('Greedy:Average tour length in test set: ', mean_gd)
     #--------------------------------------------------------------
-    # test_generalization(share=True)
-    test_generalization_tower_change(share=True)
+    test_generalization_uav_change(share=True,run_alg_name=["Greedy","RL"])
+    test_generalization_tower_change(share=True,run_alg_name=["Greedy","RL"])
     print("Running ends.")
 
