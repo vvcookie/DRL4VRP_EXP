@@ -138,7 +138,6 @@ def DRL4VRP_Problem(tower_num, uav_num, position):
             current_pos = np.array(self.track[-1])
             dis_list_go = cal_distance_list(current_pos - np.array(tower_position_mask))
             dis_list_back = cal_distance_list(self.depot_pos - np.array(tower_position_mask))
-            # dis_total = dis_list_go + dis_list_back
             dis_total = dis_list_go + dis_list_back + tower_demand # fix:考虑电塔demand
             nearest_index = np.argmin(dis_total)
             return nearest_index, dis_list_go[nearest_index], dis_list_back[nearest_index],tower_demand[nearest_index]
@@ -146,7 +145,7 @@ def DRL4VRP_Problem(tower_num, uav_num, position):
     # todo 当前贪心版本：
     #   多无人机：是
     #   是否只能回到自己仓库：是
-    #   可否连续访问仓库：否
+    #   可否连续访问仓库：是！！可以停留在仓库，如果最远的有需求tower已经去不了的话。
 
     def run():
         uav_set = [UAV(position[i]) for i in range(uav_num)]
@@ -161,10 +160,9 @@ def DRL4VRP_Problem(tower_num, uav_num, position):
             if uav.is_in_depot():  # 在仓库。（这个是留给以后扩展成可以连续访问仓库用的）
                 # if dis_go + dis_to_depot  > uav.energy:  # 电量不够
                 if dis_go + dis_to_depot + demand > uav.energy:  # 电量不够 # fix :考虑电塔demand
-                    print(f"Note: 最近的tower+返程距离+demand是{dis_go + dis_to_depot+demand}，"
-                          f"大于满格能量：{uav.energy}。uav留在原地") # 这个应该是不用改的。
-                    print(f"near_tower_index={near_tower_index}. ")
-                else:  # 如果能量足够：过去那个电站。并且标记已访问。消耗能量
+                    print(f"Note: 最近的tower是{dis_go} 回仓库是{dis_to_depot}，"
+                          f"大于满格能量：{uav.energy}。uav留在原地")
+                else:  # 如果能量足够：过去那个tower。并且标记已访问。消耗能量
                     uav.track.append(tower_position[near_tower_index])
                     # uav.energy -= dis_go
                     uav.energy -=  dis_go+demand # fix:考虑电塔demand。
@@ -183,7 +181,7 @@ def DRL4VRP_Problem(tower_num, uav_num, position):
                     uav.track.append(uav.depot_pos)
                     uav.energy = max_energy
                     # print(f"uav{uav_index} charged to max energy:{uav.energy}.")
-                else:  # 如果能量足够：过去那个电站。并且标记已访问。消耗能量
+                else:  # 如果能量足够：过去那个tower。并且标记已访问。消耗能量
                     uav.track.append(tower_position[near_tower_index])
                     # uav.energy -= dis_go
                     uav.energy -= dis_go+demand # fix: 减去电塔demand
@@ -288,7 +286,7 @@ if __name__ == "__main__":
     np.random.seed(111)# todo 方便debug
     position_set = np.random.random(size=(run_times, 2, tower_n + uav_n))
     reward_set=run_greedy_VRP(position_set,tower_n,uav_n)
-    print(f"Run {run_times} times. Average tour length:  {np.mean(reward_set)}") # 28.74258286115602
+    print(f"Run {run_times} times. Average tour length:  {np.mean(reward_set)}") # 100，200、5：28.24913963952968
 
     # draw_path_change()
     # draw_uav_change()

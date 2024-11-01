@@ -28,10 +28,11 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 
 
-from Greedy_VRP import run_greedy_VRP
+# from Greedy_VRP import run_greedy_VRP
+from Greedy_VRP_share import  run_greedy_VRP
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-if device == 'cuda': # todo 似乎一定要放在import matplotlib.pyplot之前？
+if device == 'cuda': # 一定要放在import matplotlib.pyplot之前
 
     import matplotlib
 
@@ -220,7 +221,7 @@ class DRL4TSP(nn.Module):
         # 这里已经是坐标的形式了！！！
         batch_size, input_size, sequence_size = static.size()
         distance = self.node_distance_fn(static, self.depot_num)  # (B,num_node,num_node) # node 2 node 的距离
-        if decoder_input is None:  # todo 不是等等这个参数的初始值传进来是本batch的所有仓库坐标（等价初始值）真的没问题吗
+        if decoder_input is None:
             raise ValueError("DRL4TSP decoder input is None!")
 
         num_nodes = static.size(2)  # =总节点=city+depot
@@ -334,7 +335,7 @@ class DRL4TSP(nn.Module):
             car_id = (car_id + 1) % self.depot_num
             ptr = next_car_ptr
         else:
-            print(f"达到最大迭代次数{max_steps}退出") # todo 为什么1个点会达到最大迭代次数……
+            print(f"达到最大迭代次数{max_steps}退出")
 
         if (dynamic[:,1,:]>0).any():# 如果仍然有需求
             raise ValueError("仍然有需求尚未满足")
@@ -416,7 +417,7 @@ def node_distance_shared(static, num_depots):
     '''
    是【完全共享仓库】版本.（可以在别人的仓库充电、最终停放）
     todo 修改了：目前版本是返回【点a-点b-点b最【远】的仓库】因为存在最近仓库被占用的情况。
-    todo【check一下画图和最后的完成情况。……真的能访问完吗…】
+    todo【check一下画图】
     static的维度:应该是B，2，num_depots+num_city
     '''
     depot_positions = static[:, :, :num_depots]  # 维度应该是B，2，num_depots
@@ -429,11 +430,11 @@ def node_distance_shared(static, num_depots):
     min_distances2depot, _ = torch.min(distances_to_depot, dim=2)  # B,num_city,
     min_distances2depot = torch.cat(  # 拼回 B，num_depot+ numcity的大小（因为仓库到最近的仓库距离=0，所以直接用zero矩阵）
         (torch.zeros(min_distances2depot.size(0), num_depots).to(static.device), min_distances2depot), dim=1)  #
-    #########todo test 改成最远仓库
+    #########todo 改成最远仓库
     max_distances2depot, _ = torch.max(distances_to_depot, dim=2)
     max_distances2depot = torch.cat(  # 拼回 B，num_depot+ numcity的大小（因为仓库到最近的仓库距离=0，所以直接用zero矩阵）
         (torch.zeros(max_distances2depot.size(0), num_depots).to(static.device), max_distances2depot), dim=1)  #
-    #########todo test 改成最远仓库
+
     # 计算所有节点之间的距离 【需求是：每一个点到下一个点+下一个点回仓库。所以我需要的是：n2n 和 n2depot】
     distances_between_node = torch.sqrt(
         torch.sum((static.unsqueeze(2) - static.unsqueeze(3)) ** 2, dim=1))  # 计算欧式距离
@@ -543,7 +544,7 @@ def update_dynamic_shared(num_depots, max_car_load, dynamic, distance, next_idx,
     all_demands = dynamic[:, 1].clone()
     load = torch.gather(all_loads, 1, next_idx.unsqueeze(1))  # 获得batch里每一个样本，下一个节点的load
     demand = torch.gather(all_demands, 1, next_idx.unsqueeze(1))  # 获得batch里每一个样本，下一个节点的demand
-    distance_matrix = distance[:, :-1, :]  # 距离矩阵 取到-1是因为最后一个是“每个点到最近的仓库的距离
+    distance_matrix = distance[:, :-1, :]  # 距离矩阵 取到-1是因为最后一个是“每个点到最远的仓库的距离
     # 在小批量中 - 如果我们选择访问一个城市，尽可能满足其需求量
     if visit.any():
         diff_distances = distance_matrix[
@@ -893,12 +894,6 @@ Each task must define the following functions:
 * reward_fn: specifies the quality of found solutions
 * render_fn: Specifies how to plot found solutions. Can be None
 """
-
-# %matplotlib inline
-
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f"using device:{device}")
 
 
 class StateCritic(nn.Module):
@@ -1266,10 +1261,11 @@ def run_exp(share_depot, args):
 
     test_loader = DataLoader(test_data, args.batch_size, False, num_workers=0)
 
-    test_out, test_reward = validate(test_loader, actor, reward, render, test_dir, num_plot=5,
-                                     depot_number=args.depot_num)
-    print('DRL:Average tour length in test set: ', test_out)
-    reward_greedy = run_greedy_VRP(test_data.static, args.num_city, args.depot_num)
+    # test_out, test_reward = validate(test_loader, actor, reward, render, test_dir, num_plot=5,
+    #                                  depot_number=args.depot_num)
+    test_reward=[1]
+    # print('DRL:Average tour length in test set: ', test_out)
+    reward_greedy = run_greedy_VRP(test_data.static, args.num_city, args.depot_num,share=share_depot)
 
     # print("\nRun data analysis:")
     # analysis = data_analysis.Reward_Collect()
@@ -1279,7 +1275,7 @@ def run_exp(share_depot, args):
     return test_reward, reward_greedy
 
 
-def test_generalization(share):
+def test_generalization_uav_change(share):
     parser = argparse.ArgumentParser(description='Combinatorial Optimization')
     parser.add_argument('--seed', default=1234, type=int)
     parser.add_argument('--checkpoint', default=None)
@@ -1297,7 +1293,7 @@ def test_generalization(share):
     parser.add_argument('--layers', dest='num_layers', default=1, type=int)
     parser.add_argument('--train-size', default=1000000, type=int)
     parser.add_argument('--valid-size', default=1000, type=int)
-    parser.add_argument('--depot_num', default=5, type=int)  # todo ###############
+    parser.add_argument('--depot_num', default=-1, type=int)  # todo ###############
     # 解析为args
     args = parser.parse_known_args()[0]  # colab环境跑使用
 
@@ -1308,18 +1304,17 @@ def test_generalization(share):
         args.checkpoint = os.path.join("trained_model", "trained_w200")
 
     avg_R_RL, avg_R_Greedy = [], []
-    # tower_list = list(range(50, 301, 50))
-    # for tower_n in tower_list:
-    #     args.num_city = tower_n
-    #     reward_rl, reward_greedy = run_exp(share, args)  # todo 好烦！！！想把Greedy从RL里面抽出来。。。。
-    #     avg_R_RL.append(np.mean(reward_rl))
-    #     avg_R_Greedy.append(np.mean(reward_greedy))
-    uav_list=list(range(9, 16))
+
+    uav_list=list(range(8, 16))
     for uav_n in uav_list:
         args.depot_num=uav_n
         reward_rl, reward_greedy = run_exp(share, args)  # todo 好烦！！！想把Greedy从RL里面抽出来。。。。
-        avg_R_RL.append(np.mean(reward_rl))
-        avg_R_Greedy.append(np.mean(reward_greedy))
+        mean_rl=np.mean(reward_rl)
+        mean_gd=np.mean(reward_greedy)
+        print('DRL:Average tour length in test set: ', mean_rl)
+        print('Greedy:Average tour length in test set: ', mean_gd)
+        avg_R_RL.append(mean_rl)
+        avg_R_Greedy.append(mean_gd)
     plt.plot(uav_list, avg_R_RL, label="RL average path")
     plt.plot(uav_list, avg_R_Greedy, label="Greedy average path")
     plt.legend()
@@ -1327,10 +1322,67 @@ def test_generalization(share):
     if not os.path.exists(dir):
         os.makedirs(dir)
     share=str(share)
-    plt.savefig(os.path.join(dir, f"Greedy_VS_RL_200 tower share={share}.png"))
+    plt.savefig(os.path.join(dir, f"Greedy_VS_RL on {args.num_city} tower share={share}.png"))
     # plt.show()
-    print(avg_R_RL)
-    print(avg_R_Greedy)
+
+    # 储存csv
+    reward_filename = f"Generalization_compare_share {str(share)}.csv"
+    txt = "Greedy,RL\n"
+    for greedy, RL in zip(avg_R_Greedy, avg_R_RL):
+        txt += f"{greedy},{RL}\n"
+    with open(reward_filename, "w") as f2:
+        f2.write(txt)
+    print(txt)
+
+def test_generalization_tower_change(share):
+    parser = argparse.ArgumentParser(description='Combinatorial Optimization')
+    parser.add_argument('--seed', default=1234, type=int)
+    parser.add_argument('--checkpoint', default=None)
+    parser.add_argument('--test', action='store_true', default=False)
+    parser.add_argument('--task', default='vrp')
+    parser.add_argument('--nodes', dest='num_city', default=-1, type=int)  # todo 对齐#########
+    # parser.add_argument('--actor_lr', default=5e-4, type=float)
+    # parser.add_argument('--critic_lr', default=5e-4, type=float)
+    parser.add_argument('--actor_lr', default=1e-4, type=float)  # 学习率，现在在训练第4epoch，我手动改了一下
+    parser.add_argument('--critic_lr', default=1e-4, type=float)
+    parser.add_argument('--max_grad_norm', default=2., type=float)
+    parser.add_argument('--batch_size', default=64, type=int)
+    parser.add_argument('--hidden', dest='hidden_size', default=128, type=int)
+    parser.add_argument('--dropout', default=0.1, type=float)
+    parser.add_argument('--layers', dest='num_layers', default=1, type=int)
+    parser.add_argument('--train-size', default=1000000, type=int)
+    parser.add_argument('--valid-size', default=1000, type=int)
+    parser.add_argument('--depot_num', default=20, type=int)  # todo ###############
+    # 解析为args
+    args = parser.parse_known_args()[0]  # colab环境跑使用
+
+    args.test = True
+    if share:
+        args.checkpoint = os.path.join("trained_model", "total_shared_w200")
+    else:  # not share
+        args.checkpoint = os.path.join("trained_model", "trained_w200")
+
+    avg_R_RL, avg_R_Greedy = [], []
+    tower_list = list(range(50, 301, 50))
+    for tower_n in tower_list:
+        args.num_city = tower_n
+        reward_rl, reward_greedy = run_exp(share, args)
+        mean_rl=np.mean(reward_rl)
+        mean_gd=np.mean(reward_greedy)
+        print('DRL:Average tour length in test set: ', mean_rl)
+        print('Greedy:Average tour length in test set: ', mean_gd)
+        avg_R_RL.append(mean_rl)
+        avg_R_Greedy.append(mean_gd)
+
+    plt.plot(tower_list, avg_R_RL, label="RL average path")
+    plt.plot(tower_list, avg_R_Greedy, label="Greedy average path")
+    plt.legend()
+    dir = os.path.join("generalization_test_picture")
+    if not os.path.exists(dir):
+        os.makedirs(dir)
+    share=str(share)
+    plt.savefig(os.path.join(dir, f"Greedy_VS_RL on {args.depot_num} UAV share={share}.png"))
+    # plt.show()
 
     share = str(share)
     reward_filename = f"Generalization_compare_share {share}.csv"
@@ -1388,6 +1440,13 @@ if __name__ == '__main__':
     # todo ………………………………不是、贪心也要共享的策略来对比吧 好崩溃。 【测试300微调】
     # [不是你改代码怎么不直接新建分支。]
 
-    run_exp(share, args)
-    # test_generalization(share=False)
+    # reward_rl,reward_greedy=run_exp(share, args)
+    # mean_rl = np.mean(reward_rl)
+    # mean_gd = np.mean(reward_greedy)
+    # print('DRL:Average tour length in test set: ', mean_rl)
+    # print('Greedy:Average tour length in test set: ', mean_gd)
+    #--------------------------------------------------------------
+    # test_generalization(share=True)
+    test_generalization_tower_change(share=True)
     print("Running ends.")
+
