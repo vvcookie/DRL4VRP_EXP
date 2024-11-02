@@ -341,6 +341,7 @@ class DRL4TSP(nn.Module):
             raise ValueError("仍然有需求尚未满足")
         # tour_idx = torch.cat(tour_idx, dim=1)  # (batch_size, seq_len)
 
+        # tour_idx 大小：最外层是list，包含num depot 个元素，每个元素是batch*无人机飞行过node个数。
         tour_idx = [torch.cat(tour_idx[i], dim=1) for i in range(self.depot_num)]  # 包含了每一辆无人机的轨迹
         tour_logp = torch.cat(tour_logp, dim=1)  # (batch_size, seq_len)
         return tour_idx, tour_logp
@@ -430,7 +431,7 @@ def node_distance_shared(static, num_depots):
     min_distances2depot, _ = torch.min(distances_to_depot, dim=2)  # B,num_city,
     min_distances2depot = torch.cat(  # 拼回 B，num_depot+ numcity的大小（因为仓库到最近的仓库距离=0，所以直接用zero矩阵）
         (torch.zeros(min_distances2depot.size(0), num_depots).to(static.device), min_distances2depot), dim=1)  #
-    #########todo 改成最远仓库
+    ######### 改成最远仓库
     max_distances2depot, _ = torch.max(distances_to_depot, dim=2)
     max_distances2depot = torch.cat(  # 拼回 B，num_depot+ numcity的大小（因为仓库到最近的仓库距离=0，所以直接用zero矩阵）
         (torch.zeros(max_distances2depot.size(0), num_depots).to(static.device), max_distances2depot), dim=1)  #
@@ -787,30 +788,23 @@ def reward(static, tour_indices):  # 这个是旧的reward，,depot_number参数
     旅行总长度: 计算得到的旅行的总欧几里得距离。
     """
     total_len = []
-    for tour_indices_item in tour_indices:
-        # 将索引转换回旅行路线
+    for tour_indices_item in tour_indices:# tour_indices是长度为depot num的列表……
+        # 将索引转换回旅行路线。idx：B*2*飞机路过的node数量。
         idx = tour_indices_item.unsqueeze(1).expand(-1, static.size(1), -1)
-        tour = torch.gather(static.data, 2, idx).permute(0, 2, 1)
+        tour = torch.gather(static.data, 2, idx).permute(0, 2, 1) # tour大小：B*飞机路过的node数量*2（XY）#
 
-        # 确保我们总是返回到仓库 - 注意额外的 concat
-        # 不会增加任何额外的损失，因为连续点之间的欧几里得距离是 0
-        # start = static.data[:, :, 0].unsqueeze(1) # 取消了在开头结尾补充仓库。结尾一定有仓库，开头的仓库需要手动添加。！！！！！
-        # y = torch.cat((start, tour, start), dim=1)
-
-        # 每个连续点之间的欧几里得距离
+        # 确保总是返回到仓库 - 注意额外的 concat不会增加任何额外的损失，因为连续点之间的欧几里得距离是 0
         # tour_len = torch.sqrt(torch.sum(torch.pow(y[:, :-1] - y[:, 1:], 2), dim=2))
         tour_len = torch.sqrt(torch.sum(torch.pow(tour[:, :-1] - tour[:, 1:], 2), dim=2))
         total_len.append(tour_len.sum(1))
     # 返回旅行总长度
     # total_len.sum(1)
-    # print(total_len)
-
     # return total_len#tour_len.sum(1)
 
-    # 将列表中的所有元素堆叠成一个新的张量
-    total_len_tensor = torch.stack(total_len)
+    # 将列表中的所有元素堆叠成一个新的张量。# total_len是大小为depot num的列表，元素为tensor(B,)
+    total_len_tensor = torch.stack(total_len) # total_len_tensor大小depot num * B
     # 计算所有旅行的总长度之和
-    total_distance = total_len_tensor.sum(0)
+    total_distance = total_len_tensor.sum(0) # 大小(B,),是把同一个Batch内部，所有飞机的总路程秀禾。
     return total_distance
 
 
@@ -833,21 +827,17 @@ def render(static, tour_indices, num_depots, save_path):
     colors = ['red', 'blue', 'green', 'orange', 'purple', 'yellow', 'cyan', 'magenta', 'brown', 'gray']  # 创建颜色列表
     # 遍历每个子图，绘制路径
     for i, ax in enumerate(axes):
-        for j in range(len(tour_indices)):
+        for j in range(len(tour_indices)): # j是飞机维度
             # Convert the indices back into a tour
-            idx = tour_indices[j][i]
+            idx = tour_indices[j][i] # 第二个维度是Batch size 的维度。
             if len(idx.size()) == 1:
                 idx = idx.unsqueeze(0)
             idx = idx.expand(static.size(1), -1)
             data = torch.gather(static[i].data, 1, idx).cpu().numpy()
-            # start = static[i, :, 0].cpu().data.numpy()
-            # x = np.hstack((start[0], data[0], start[0]))
-            # y = np.hstack((start[1], data[1], start[1]))
+
             x = np.hstack(data[0])
             y = np.hstack(data[1])
             # Assign each subtour a different colour & label in order traveled
-            # idx = np.hstack((0, tour_indices[i].cpu().numpy().flatten(), 0))
-            # where = np.where(idx == 0)[0]
             idx = np.hstack(tour_indices[j][i].cpu().numpy().flatten())
             where = np.where(idx < num_depots)[0]
             for k in range(len(where) - 1):
@@ -868,6 +858,86 @@ def render(static, tour_indices, num_depots, save_path):
     plt.tight_layout()
     plt.savefig(save_path, bbox_inches='tight', dpi=500)
     plt.close('all')
+
+def render_dynamic(static, tour_indices, num_depots, save_path):
+    """绘制找到的解决方案。"""
+    # 关闭所有潜在的之前的绘图
+    plt.close('all')
+    import matplotlib.animation as animation
+    # 确定绘制的子图数量，至少绘制一张图
+    num_plots = 1  # 注意子图个数是num_plots*num_plots
+    points_set=[]
+    # 遍历每个子图，绘制路径
+    for i in range(num_plots):
+        for j in range(len(tour_indices)):  # j是飞机维度
+            # Convert the indices back into a tour
+            idx = tour_indices[j][i]  # 第二个维度是Batch size 的维度。
+            if len(idx.size()) == 1:
+                idx = idx.unsqueeze(0)
+            idx = idx.expand(static.size(1), -1)
+            data = torch.gather(static[i].data, 1, idx).cpu().numpy() #2 路程长度
+            data = data.transpose(1,0)
+            points_set.append(data)
+
+
+    # # 创建子图
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.set_ylim(0, 1)
+    ax.set_xlim(0, 1)
+    plt.tight_layout()
+
+    # ----------------------
+    x = [np.array([p[0] for p in track]) for track in points_set]
+    y = [np.array([p[1] for p in track]) for track in points_set]
+
+    tower_x = [x1[1:] for x1 in x]
+    tower_y = [y1[1:] for y1 in y]
+    for xt, yt in zip(tower_x, tower_y):
+        plt.scatter(xt, yt, s=10)  # 画出城市的点 # s是大小
+    # 用于画出仓库点。拼接在一起
+    plt.scatter([x1[0] for x1 in x], [y1[0] for y1 in y], marker="*", s=90)  # 仓库
+
+    lines = [ax.plot([], [], lw=1)[0] for _ in range(len(points_set))]
+    plt.tight_layout()
+    # ----------------------
+
+    def init():
+        for line in lines:
+            line.set_data([], [])
+        return lines
+
+    def animate(N):
+        for line, x1, y1 in zip(lines, x, y):
+            line.set_data(x1[:N], y1[:N])
+        return lines
+
+    ani = animation.FuncAnimation(fig, animate, 50, init_func=init, interval=200)
+    # todo ^……标题………………
+    # todo 对齐地图
+    plt.show()
+
+
+#     # Assign each subtour a different colour & label in order traveled
+        #     idx = np.hstack(tour_indices[j][i].cpu().numpy().flatten())
+        #     where = np.where(idx < num_depots)[0]
+        #     for k in range(len(where) - 1):
+        #         low = where[k]
+        #         high = where[k + 1]
+        #         ax.plot(x[low: high + 1], y[low: high + 1], zorder=1, color=colors[j % 10], label=j)
+        #
+        #     # 给每个点加上它的序号
+        #     for point_idx, (px, py) in enumerate(zip(x, y)):
+        #         ax.text(px, py, str(idx[point_idx]), fontsize=8, ha='right', va='bottom')
+        #
+        # ax.scatter(static[i, 0, num_depots:].cpu(), static[i, 1, num_depots:].cpu(), s=10, c='r', zorder=2)
+        # ax.scatter(static[i, 0, :num_depots].cpu(), static[i, 1, :num_depots].cpu(), s=50, c='k', marker='*', zorder=3)
+
+
+    # plt.show()
+    # plt.tight_layout()
+    # plt.savefig(save_path, bbox_inches='tight', dpi=500)
+    # plt.close('all')
 
 
 """##trainer.py
@@ -962,10 +1032,9 @@ def validate(data_loader, actor, reward_fn, render_fn=None, save_dir='.',
             # 关键步骤！！！，把静态数据和动态数据进行actor操作，获得访问节点的索引。
             tour_indices, _ = actor.forward(static, dynamic, x0)
 
-
         # 使用vrp奖励函数 reward_fn 计算预测的旅游索引的奖励。取奖励的均值，并使用 item() 提取标量值，添加到rewards列表中
         # reward = reward_fn(static, tour_indices).mean().item()
-        reward = reward_fn(static, tour_indices)  # 本batch的所有reward 列表
+        reward = reward_fn(static, tour_indices)  # 本batch的所有reward 列表 # todo 感觉画图的话要用到这里面的取数技巧。
         batch_reward_mean = reward.mean().item()  # 本batch的均值。
         # rewards.append(batch_reward_mean)
         rewards.extend(reward.tolist())
@@ -974,6 +1043,7 @@ def validate(data_loader, actor, reward_fn, render_fn=None, save_dir='.',
             name = 'batch%d_reward%2.4f.png' % (batch_idx, batch_reward_mean)
             path = os.path.join(save_dir, name)
             render_fn(static, tour_indices,depot_number, path)
+            # render_dynamic(static, tour_indices,depot_number, path)
     # 将模型 actor 设置回训练模式
     actor.train()
     # 返回平均奖励
@@ -1159,7 +1229,7 @@ def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
     # plt.show()
 
 
-def run_exp(share_depot, args):
+def run_RL_exp(share_depot, args):
     # Determines the maximum amount of load for a vehicle based on num nodes
     LOAD_DICT = {10: 20, 20: 30, 30: 35, 50: 40, 100: 50, 200: 80}  # todo 已经废弃
     # MAX_DEMAND = 1
@@ -1368,7 +1438,7 @@ def test_generalization_uav_change(share,run_alg_name):
     parser.add_argument('--dropout', default=0.1, type=float)
     parser.add_argument('--layers', dest='num_layers', default=1, type=int)
     parser.add_argument('--train-size', default=1000000, type=int)
-    parser.add_argument('--valid-size', default=1000, type=int)
+    parser.add_argument('--valid-size', default=100, type=int)
     parser.add_argument('--depot_num', default=-1, type=int)  # todo ###############
     # 解析为args
     args = parser.parse_known_args()[0]  # colab环境跑使用
@@ -1384,7 +1454,7 @@ def test_generalization_uav_change(share,run_alg_name):
     reward_list_dict={}
     # avg_R_RL, avg_R_Greedy = [], []
 
-    uav_list=list(range(2, 5))
+    uav_list=list(range(2, 3))
     for uav_n in uav_list:
         args.depot_num=uav_n
         reward_dict= run_multi_alg_test(share, args, algorithm=run_alg_name)
@@ -1457,7 +1527,7 @@ def test_generalization_tower_change(share,run_alg_name):
             reward_list_dict.setdefault(key, [])
             reward_list_dict[key].append(np.mean(val))  # 对每一个算法的reward集合计算平均值。
     for alg in reward_list_dict.keys():
-        plt.plot(tower_list, reward_list_dict[alg], label=f"{alg} average path") # TODO share
+        plt.plot(tower_list, reward_list_dict[alg], label=f"{alg} average path")
     plt.legend()
     dir = os.path.join("generalization_test_picture")
     if not os.path.exists(dir):
@@ -1497,14 +1567,13 @@ if __name__ == '__main__':
     parser.add_argument('--dropout', default=0.1, type=float)
     parser.add_argument('--layers', dest='num_layers', default=1, type=int)
     parser.add_argument('--train-size', default=10000, type=int)  #fixme!!!!!!!!!!!!
-    parser.add_argument('--valid-size', default=1000, type=int)
+    parser.add_argument('--valid-size', default=10, type=int)
     parser.add_argument('--depot_num', default=6, type=int)  # todo ###############
 
     # 解析为args
     args = parser.parse_known_args()[0]  # colab环境跑使用
     # --------------------------------------------------------------------
     args.test = True
-    args.test = False # todo ###################
     # --------------------------------------------------------------------
     # 设置checkpoint路径
     share = True   # todo 检查#############
@@ -1520,17 +1589,14 @@ if __name__ == '__main__':
     # todo 【时间窗】：现在无人机时间没有按照顺序来。（若巡检时间固定，在本塔巡检完之后，锁定下一个，飞过去，计算飞过去的时间，排决策顺序）
     # todo:  抢夺决策？？？怎么写实现：1，获取所有无人机下一步的距离（已经确定可行）然后按照距离执行（？会重复吧喂）
     # todo:  随机事件（这个太难写了）
-    # todo :10.16 检查 mask 逻辑是否有误、
-    # todo ………………………………不是、贪心也要共享的策略来对比吧 好崩溃。 【测试300微调】
+    #   【测试300微调】
     # [不是你改代码怎么不直接新建分支。]
 
-    # reward_rl,reward_greedy=run_exp(share, args)
-    # mean_rl = np.mean(reward_rl)
-    # mean_gd = np.mean(reward_greedy)
-    # print('DRL:Average tour length in test set: ', mean_rl)
-    # print('Greedy:Average tour length in test set: ', mean_gd)
+    reward_rl=run_RL_exp(share, args)
+    mean_rl = np.mean(reward_rl)
+    print('DRL:Average tour length in test set: ', mean_rl)
     #--------------------------------------------------------------
-    test_generalization_uav_change(share=True,run_alg_name=["Greedy","RL"])
-    test_generalization_tower_change(share=True,run_alg_name=["Greedy","RL"])
+    # test_generalization_uav_change(share=True,run_alg_name=["Greedy"])
+    # test_generalization_tower_change(share=True,run_alg_name=["Greedy","RL"])
     print("Running ends.")
 
