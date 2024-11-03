@@ -1,5 +1,6 @@
 # todo :可能demand不相等才是能拉开贪心和RL的设定吗！！
 import math
+import os.path
 import random
 import numpy as np
 import matplotlib.pyplot as plt
@@ -63,7 +64,11 @@ def DRL4VRP_Problem(tower_num, uav_num, position,share):
     '''
 
 
-    def plot_track(points_set):
+    def plot_track(points_set,save_dir):
+        '''
+        用于画出轨迹的动图 todo 现在只能画一张图……【要限定固定的画图张数量吗
+        '''
+        plt.close('all')
         fig, ax = plt.subplots(figsize=(6, 6))
         ax.set_ylim(0, map_size)
         ax.set_xlim(0, map_size)
@@ -98,7 +103,12 @@ def DRL4VRP_Problem(tower_num, uav_num, position,share):
             return lines
 
         ani = animation.FuncAnimation(fig, animate, 50, init_func=init, interval=200)
-        plt.show()
+        title=f"Greedy T{tower_num} UAV{uav_num} share={str(share)}"
+        plt.title(title)
+        ani.save(os.path.join(save_dir,f"{title}.gif"), writer='pillow',dpi=500)  # 保存
+        # plt.show()
+        plt.close('all')
+
 
 
     class UAV:
@@ -293,7 +303,7 @@ def DRL4VRP_Problem(tower_num, uav_num, position,share):
 
         # print(f"total distance:{total_dis}")
 
-        # plot_track(all_track) # 画出本地图的动态图。 # todo 给RL也整一个！
+        # plot_track(all_track,"GIF") # 画出本地图的动态图。 # todo ……要怎么给RL和GD来对齐画图呢。
 
         return total_dis
 
@@ -303,7 +313,7 @@ def DRL4VRP_Problem(tower_num, uav_num, position,share):
 
 def run_greedy_VRP(position_set,tower_n,uav_n,share):
     '''
-    run_greedy_VRP 适用于一次性运行n个贪心算法VRP问题实例。
+    适用于一次性运行n个贪心算法VRP问题实例。是用于把RL的数据集传进来训练的接口。
     position_set: 为多个地图的集合。
     '''
     # print("Run greedy:")
@@ -358,18 +368,19 @@ def draw_uav_change(share):
     plt.show()
 
 
-
 if __name__ == "__main__":
-    run_times=1000
+    run_times=1
     tower_n=200
-    uav_n=20
-    share_depot=False
-    np.random.seed(111)# todo 方便debug。
-    position_set = np.random.random(size=(run_times, 2, tower_n + uav_n))
+    uav_n=6
+    share_depot=True
+    np.random.seed(111) #方便debug。
+    position_set = np.random.random(size=(run_times, 2, tower_n + uav_n)) # 共用地图。
+
+    # todo 怎么感觉Greedy 怪怪的……选最近的仓库要不要仅根据当前点-下一个点的距离，来贪心？
 
     # # 运行共享
     reward_set_share=run_greedy_VRP(position_set,tower_n,uav_n,share=True) # 共享的效果也太差了……因为一直在局部搜索，去其他人仓库的约束其实还挺差的
-    print(f"Run {run_times} times. 贪心共享  Average tour length:  {np.mean(reward_set_share)}") #
+    print(f"Run {run_times} times. 贪心共享 Average tour length:  {np.mean(reward_set_share)}") #
 
     # # 运行非共享
     reward_set_independent = run_greedy_VRP(position_set, tower_n, uav_n, share=False) # 非共享版本
