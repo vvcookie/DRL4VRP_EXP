@@ -789,7 +789,7 @@
 # # from model import DRL4TSP, Encoder
 # # import DRL4TSP, Encoder
 # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-# print(f"using device:{device}")
+#print(f"using device:{device}")
 #
 #
 # # device = torch.device('cpu')

@@ -369,18 +369,18 @@ def draw_uav_change(share):
 
 
 if __name__ == "__main__":
-    run_times=1
-    tower_n=200
-    uav_n=6
-    share_depot=True
+    run_times=1000
+    tower_n=10
+    uav_n=2
+    # share_depot=False
     np.random.seed(111) #方便debug。
     position_set = np.random.random(size=(run_times, 2, tower_n + uav_n)) # 共用地图。
 
     # todo 怎么感觉Greedy 怪怪的……选最近的仓库要不要仅根据当前点-下一个点的距离，来贪心？
 
-    # # 运行共享
-    reward_set_share=run_greedy_VRP(position_set,tower_n,uav_n,share=True) # 共享的效果也太差了……因为一直在局部搜索，去其他人仓库的约束其实还挺差的
-    print(f"Run {run_times} times. 贪心共享 Average tour length:  {np.mean(reward_set_share)}") #
+    # # # 运行共享
+    # reward_set_share=run_greedy_VRP(position_set,tower_n,uav_n,share=True) # 共享的效果也太差了……因为一直在局部搜索，去其他人仓库的约束其实还挺差的
+    # print(f"Run {run_times} times. 贪心共享 Average tour length:  {np.mean(reward_set_share)}") #
 
     # # 运行非共享
     reward_set_independent = run_greedy_VRP(position_set, tower_n, uav_n, share=False) # 非共享版本
