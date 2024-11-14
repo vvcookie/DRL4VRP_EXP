@@ -227,10 +227,9 @@ class DRL4TSP(nn.Module):
             raise ValueError("DRL4TSP decoder input is None!")
 
         num_nodes = static.size(2)  # =总节点=city+depot
+        mask = torch.ones(batch_size, sequence_size, device=device)  # 0是mask掉。
 
-        mask = torch.ones(batch_size, sequence_size, device=device)  # 1是mask掉吗
-
-        car_id = 0
+        #car_id = 0
         car_load = [torch.full((batch_size,), self.car_load) for _ in range(self.depot_num)]
 
         # 使用 arange 生成 depot 数字，然后扩展为 (depot_num, 1, batch_size)
@@ -239,79 +238,116 @@ class DRL4TSP(nn.Module):
         # 给每个无人机tour里记录初始仓库。tour idx 的大小是num_car,tour length,B,
         tour_idx = [[torch.tensor(initial_depot[i][0]).unsqueeze(1).to(device)] for i in
                     range(self.depot_num)]  # num_car, 1, batch_size
-        # # 最终的访问序列。
-        tour_logp = []
+        tour_logp = []# 最终的访问序列。
 
-        # ptr 大小B 1。ptr更新！！！更新为下一个无人机的当前位置。
-        ptr = tour_idx[0][-1].clone().detach()  # 当前第0辆无人机的位置。从第一辆无人机开始，取最后一个（其实只有一个元素）所在下标。
+        # # ptr 大小B 1。
+        # current_idx = tour_idx[0][-1].clone().detach()  # 当前第0辆无人机的位置。从第一辆无人机开始，取最后一个（其实只有一个元素）所在下标。
 
         max_steps = sequence_size if self.mask_fn is None else 1000  # 如果设置mask函数，为了避免死循环，这是最大步数。
 
         static_hidden = self.static_encoder(static) # 只需要计算一次
 
         for _ in range(max_steps):  # 主循环
-            if self.mask_fn is not None:
-                # 根据当前无人机结束新的访问，结合下一台无人机的。注意这个ptr和dynamic需要是新的,因为需要根据下一个无人机的当前位置，判断下一个点不能去哪。
-                mask = self.mask_fn(self.depot_num, dynamic, distance, ptr.data, car_id).detach()
+            # todo √：增加for car_id2 in range(self.depot_num)
+            tem_next_ptr=[] # 可能维度会是（num_depot,B,1)??
+            tem_next_logp=[]
 
-            if not mask.byte().any():  # 如果全mask掉了就退出
+            # 所有batch的里面，uav归位+所有city无需求。退出
+            if dynamic.data[:, 1].eq(0).all():
                 break
 
-            decoder_input = torch.gather(static, 2, ptr.view(-1, 1, 1).expand(-1, input_size, 1).to(
-                dynamic.device)).detach()  # 更新当前位置信息。
+            for car_id in range(self.depot_num):
 
-            dynamic_hidden = self.dynamic_encoder(dynamic)  # 编码当前动态信息
-            decoder_hidden = self.decoder(decoder_input)  # 编码当前位置xy静态信息 (B, 2)
+                # todo √替换dynamic里的load！把load换成下一个无人机的load，但demand不变，因为是同一个环境。。
+                dynamic[:, 0] = car_load[car_id].unsqueeze(1).expand(-1, num_nodes)
+                # todo √ current_idx 更新,car id 更新。
+                current_idx = tour_idx[car_id][-1].clone().detach()# 当前所在id
 
-            # 指针网络。里面包含GRU
-            probs, last_hh = self.pointer(static_hidden, dynamic_hidden, decoder_hidden,
-                                          last_hh)  # 得到下一个点的（未mask）概率分布和隐状态。
-            probs = F.softmax(probs + mask.log(), dim=1)  # mask操作+softmax Softmax的原因：因为π(a,s)是必须大于0的，用softmax把0映射成很小的数字
+                if self.mask_fn is not None:
+                    # 根据当前无人机结束新的访问，结合下一台无人机的.
+                    mask = self.mask_fn(self.depot_num, dynamic, distance, current_idx.data, car_id).detach()
+                if not mask.byte().any():  # 如果全mask掉了就退出
+                    break
 
-            if self.training:
-                try:
-                    m = torch.distributions.Categorical(probs)
-                except:
-                    raise ValueError("Error: m = torch.distributions.Categorical(probs)")
-                # Sometimes an issue with Categorical & sampling on GPU; See:
-                # https://github.com/pemami4911/neural-combinatorial-rl-pytorch/issues/5
-                ptr = m.sample()  # 根据上面的概率分布，采样一个点。大小B
+                # 更新decoder_input当前位置xy，(B, 2)
+                decoder_input = torch.gather(static, 2, current_idx.view(-1, 1, 1).expand(-1, input_size, 1).to(
+                    dynamic.device)).detach()
 
-                while not torch.gather(mask, 1, ptr.data.unsqueeze(1)).byte().all():
-                    ptr = m.sample()
+                dynamic_hidden = self.dynamic_encoder(dynamic)  # 更新编码当前动态信息
+                decoder_hidden = self.decoder(decoder_input)  # 更新编码当前位置xy静态信息
 
-                logp = m.log_prob(ptr) # 记录这个点的概率……
-            else:
-                prob, ptr = torch.max(probs, 1)  # Greedy
-                logp = prob.log()  # B,1
+                # 指针网络。里面包含GRU。
+                probs, last_hh = self.pointer(static_hidden, dynamic_hidden, decoder_hidden,
+                                              last_hh)  # 得到下一个点的（未mask）概率分布和隐状态。
+                probs = F.softmax(probs + mask.log(), dim=1)  # mask操作+softmax Softmax的原因：因为π(a,s)是必须大于0的，用softmax把0映射成很小的数字
 
-            # 选择好了下一个访问的点，访问，更新动态信息。
-            if self.update_fn is not None:
+                if self.training:
+                    try:
+                        m = torch.distributions.Categorical(probs)
+                    except:
+                        raise ValueError("Error: m = torch.distributions.Categorical(probs)")
+                    # Sometimes an issue with Categorical & sampling on GPU; See:
+                    # https://github.com/pemami4911/neural-combinatorial-rl-pytorch/issues/5
+                    ptr = m.sample()  # 根据上面的概率分布，采样一个点。大小B
 
-                # 获取当前位置
-                last_visited = tour_idx[car_id][-1] # 这个是当前位置的意思。
-                # 更新动态信息，传递最后一个访问的点
+                    while not torch.gather(mask, 1, ptr.data.unsqueeze(1)).byte().all():
+                        ptr = m.sample()
 
-                #  # B 2 L 这里还是【当前小车】的load和当前小车的新一步ptr，更新地图里的load和demand
-                dynamic = self.update_fn(self.depot_num, self.car_load, dynamic, distance, ptr.data,
-                                         last_visited)
+                    logp = m.log_prob(ptr) # 记录这个点的概率……
+                else:
+                    prob, ptr = torch.max(probs, 1)  # Greedy
+                    logp = prob.log()  # B,1
 
-                # 新增===dynamic中的旧load储存，更新新load。所以此后dynamic都是当前无人机访问下一个点后的新环境
+                # todo ：√记录这个无人机选的点ptr 和logp……………………
+                tem_next_ptr.append(ptr)
+                tem_next_logp.append(logp)
+
+
+                # todo-------------------从这里截断，结束for every uav循环。-----------------
+            print("tem_next_ptr:",tem_next_ptr)
+            print("tem_next_logp:",tem_next_logp)
+
+            # todo：冲突决策。应该把这个放在楼上的外面？
+            #  如果有点和其他的点的ptr重复：
+            #     标记处那些点是重复元素。（把非重复元素作为访问过的点，mask掉，要使用哪个函数呢？？？）
+            #    选出这些点里面比top 1 logp小的位置，然后让这些点重新使用mask掉点后选点（要使用对应的dynamic、ptr）
+            #      保存刚刚新选的点
+
+
+            # todo √-------------for every uav循环：储存本轮的访问计划、更新地图-----------------
+            for car_id in range(self.depot_num):
+                # 读取当前位置；更新dynamic；保存现在的load；换成下一个车的load；更新isdone；（ptr和logp保存过了）；更新下一车ptr
+                # 选择好了下一个访问的点，访问，更新动态信息。
+                if self.update_fn is not None:
+
+                    # 获取当前位置
+                    last_visited = tour_idx[car_id][-1] # 这个是当前位置的意思。
+                    # todo √获得下一步的点（已解决冲突）
+                    ptr = tem_next_ptr[car_id].clone().detach()  # 无人机下一步去往的店id（要clone().detach()吗
+                    # todo √把本uav的load装进dynamic
+                    dynamic[:, 0] = car_load[car_id].unsqueeze(1).expand(-1, num_nodes)
+
+                    # 更新dynamic。B 2 L 这里还是当前车的load和新一步ptr，更新地图里的load和demand
+                    dynamic = self.update_fn(self.depot_num, self.car_load, dynamic, distance, ptr.data,
+                                             last_visited)
+
+                # dynamic中的旧load储存，更新新load。所以此后dynamic都是当前无人机访问下一个点后的新环境
                 car_load[car_id] = dynamic[:, 0, 0].clone()  # 随便取第一个仓库的load就好了，存到car_load数组里面。
 
                 # 意思应该是batch里面有些情况下，已经遍历完了，就让车强制留在仓库）
                 is_done = dynamic[:, 1].sum(1).eq(0).float()  # 如果所有点的需求加和=0，就说明done
+                logp= tem_next_logp[car_id]
                 logp = logp * (1. - is_done)  # 如果完成了，logp 也是0, 梯度就不会更新了
 
-                # 替换dynamic里的load！把load换成下一个无人机的load，但demand继承。
-                dynamic[:, 0] = car_load[(car_id + 1) % self.depot_num].unsqueeze(1).expand(-1, num_nodes)
+                # # 替换dynamic里的load！把load换成下一个无人机的load，但demand继承。【取消了，放在上面更新】
+                # dynamic[:, 0] = car_load[(car_id + 1) % self.depot_num].unsqueeze(1).expand(-1, num_nodes)
 
-            tour_logp.append(logp.unsqueeze(1))  # 每个时间t都要储存：因为为了计算整条路径出现的概率. T B 1
-            tour_idx[car_id].append(ptr.data.unsqueeze(1))  # T B 1 把当前无人机的新访问的点保存起来。
+                tour_logp.append(logp.unsqueeze(1))  # 每个时间t都要储存：因为为了计算整条路径出现的概率. T B 1
+                tour_idx[car_id].append(ptr.data.unsqueeze(1))  # T B 1 把当前无人机的新访问的点保存起来。
 
-            ptr = tour_idx[(car_id + 1) % self.depot_num][-1].clone().detach()  # 取出下一台无人机所在的点。
-            # 车辆序号更新
-            car_id = (car_id + 1) % self.depot_num
+                # current_idx = tour_idx[(car_id + 1) % self.depot_num][-1].clone().detach()# 取出下一台无人机所在的点。【取消了，放在上面更新】
+                # 车辆序号更新
+                #car_id = (car_id + 1) % self.depot_num
 
         else:
             print(f"达到最大迭代次数{max_steps}退出")
@@ -446,6 +482,7 @@ def update_mask_shared(num_depots, dynamic, distance, current_idx, car_id):
     # chosen_distance[:, :num_depots] = depot_distances # 什么无效代码。
 
     # 如果没有剩余的正需求量，我们可以结束行程。
+
     if demands.eq(0).all():  # 即所有batch的里面，地图里面每一个点都没有需求了. 外界检测到全0的mask会退出vrp流程。
         return demands * 0.
 
@@ -709,11 +746,12 @@ def update_dynamic_independent(num_depots, max_car_load, dynamic, distance, next
     if visit.any():
         distance = n2n_distance[  #取对应batch的对应两点间的距离值（毕竟只要减去两个点之间的真实距离，无需考虑仓库距离。
             torch.arange(n2n_distance.size(0)), current_idx, next_idx.squeeze()].unsqueeze(1)
-
+        # fixme:疑惑1：为什么能连续带在仓库，因为已经结束了吗？疑惑2：为什么会出现demand =-1的情况？ 疑惑3：为什么会访问能力之外的点
+        #  疑惑4：难道访问的时候减去的demand到底是多少【-1】
         # 上一次选择的节点与这次选择的节点的差值
         check_load = load - demand - distance
         if (check_load < 0).any():
-            print(check_load)
+            print("check_load",check_load)
             raise ValueError("Error: 存在负载为负数.")
 
         new_load = torch.clamp(check_load, min=0)  # 当前负载-下一个点需求-路程损耗
@@ -729,20 +767,20 @@ def update_dynamic_independent(num_depots, max_car_load, dynamic, distance, next
         all_loads[visit_idx] = new_load[visit_idx]
         all_demands[visit_idx, next_idx[visit_idx]] = new_demand[visit_idx].view(-1)
 
-    #  dynamic会标记仓库是非空（-1空、0非空），所以update的时候，如果无人机离开仓库（当前点=仓库），就要更新该仓库demand
-    #  注意，本质上我们认为飞机【已经去了】下一个节点 next_idx。所以下一个节点的需求、飞机的load也要根据节点类型而更新。
+    #  dynamic会标记仓库是非空（-1空、0非空），所以update的时候，如果无人机离开仓库（当前点=仓库），就要更新该仓库demand为
+    #  注意，认为飞机【已经去了】下一个节点 next_idx。所以下一个节点的需求、飞机的load也要根据节点类型而更新。
     # 使用布尔索引来找出当前节点的是仓库的样本
     depot_visited = current_idx.lt(num_depots).to(dynamic.device)
 
     # depot_visited_idx是【数组下标】不是城市序号！！
     depot_visited_idx = depot_visited.nonzero().squeeze()
 
-    # 使用布尔索引和高效的张量操作来更新all_demands【意思是：把当前节点是depot的样本，的对应depot的demand更新为-1
+    # 使用布尔索引操作来更新all_demands【把当前节点是depot的样本，的对应depot的demand更新为-1】
     # all_demands[depot_visited_idx.to('cuda'), last_visited.to('cuda')[depot_visited_idx]] = -1. #+ new_load[depot_visited_idx].reshape(-1,2)
     all_demands[depot_visited_idx.to(dynamic.device), current_idx.to(dynamic.device)[
         depot_visited_idx]] = -1.  # + new_load[depot_visited_idx].reshape(-1,2)
 
-    # 在batch中 - 如果我们下一个选择访问一个仓库，则load回满，仓库的deman标记为0
+    # 在batch中 - 如果我们下一个选择访问一个仓库，则load回满，仓库的demand标记为0
     # if depot.any():
     #     all_loads[depot.nonzero().squeeze()] = 1.
     #     all_demands[depot.nonzero().squeeze(), 0] = 0.
@@ -1513,20 +1551,20 @@ if __name__ == '__main__':
     parser.add_argument('--checkpoint', default=None)
     parser.add_argument('--test', action='store_true', default=False)
     parser.add_argument('--task', default='vrp')
-    parser.add_argument('--nodes', dest='num_city', default=20, type=int)  #todo 对齐#########
+    parser.add_argument('--nodes', dest='num_city', default=10, type=int)  #todo 对齐#########
     # parser.add_argument('--actor_lr', default=5e-4, type=float)
     # parser.add_argument('--critic_lr', default=5e-4, type=float)
     parser.add_argument('--actor_lr', default=1e-4, type=float)  # 学习率，现在在训练第4epoch，我手动改了一下
     parser.add_argument('--critic_lr', default=1e-4, type=float)
     parser.add_argument('--max_grad_norm', default=2., type=float)
-    parser.add_argument('--batch_size', default=64, type=int)  #fixme#########################
+    parser.add_argument('--batch_size', default=8, type=int)  #fixme#########################
     # parser.add_argument('--batch_size', default=8, type=int) ##########
     parser.add_argument('--hidden', dest='hidden_size', default=128, type=int)
     parser.add_argument('--dropout', default=0.1, type=float)
     parser.add_argument('--layers', dest='num_layers', default=1, type=int)
     parser.add_argument('--train-size', default=100, type=int)  #fixme!!!!!!!!!!!!
     parser.add_argument('--valid-size', default=1000, type=int)
-    parser.add_argument('--depot_num', default=2, type=int)  # todo ###############
+    parser.add_argument('--depot_num', default=3, type=int)  # todo ###############
 
     # 解析为args
     args = parser.parse_known_args()[0]  # colab环境跑使用
