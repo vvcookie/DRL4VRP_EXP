@@ -218,6 +218,8 @@ class DRL4TSP(nn.Module):
         last_hh: Array of size (batch_size, num_hidden)
             Defines the last hidden state for the RNN
         """
+        # todo ---这是同时决策版本。----------------------------------------------------------
+
         # 这里已经是坐标的形式了！！！
         batch_size, input_size, sequence_size = static.size()
         distance = self.node_distance_fn(static, self.depot_num)  # (B,num_node,num_node) # node 2 node 的距离
@@ -225,59 +227,47 @@ class DRL4TSP(nn.Module):
             raise ValueError("DRL4TSP decoder input is None!")
 
         num_nodes = static.size(2)  # =总节点=city+depot
-        # decoder_input = decoder_input[:, :, 0].unsqueeze(2) # 以前这么做是为了传递car 参数——实际上直接改不就好了吗！
 
-        # Always use a mask - if no function is provided, we don't update it
         mask = torch.ones(batch_size, sequence_size, device=device)  # 1是mask掉吗
 
         car_id = 0
         car_load = [torch.full((batch_size,), self.car_load) for _ in range(self.depot_num)]
 
-        # Structures for holding the output sequences
-        # tour_idx, tour_logp = [], [] # 最终的访问序列。
-        tour_logp = []  # tour idx列表在下面直接用初始仓库序列代替
-        # tour idx 的大小是num_car,tour length,B,
-
-        # 使用arange生成初始depot，然后直接调整形状
-        initial_depot = torch.arange(self.depot_num).view(self.depot_num, 1, 1)
-        # 使用expand复制到所需的批处理大小
-        initial_depot = initial_depot.expand(self.depot_num, 1, batch_size)
-        initial_depot = initial_depot.tolist()
-        # 给每个无人机tour里记录初始仓库。
+        # 使用 arange 生成 depot 数字，然后扩展为 (depot_num, 1, batch_size)
+        initial_depot = torch.arange(self.depot_num).view(self.depot_num, 1, 1).expand(self.depot_num, 1,
+                                                                                       batch_size).tolist()
+        # 给每个无人机tour里记录初始仓库。tour idx 的大小是num_car,tour length,B,
         tour_idx = [[torch.tensor(initial_depot[i][0]).unsqueeze(1).to(device)] for i in
                     range(self.depot_num)]  # num_car, 1, batch_size
+        # # 最终的访问序列。
+        tour_logp = []
 
-        # ptr=torch.tensor(tour_idx[0][-1])  #ptr 大小B 1。ptr更新！！！更新为下一个无人机的当前位置。
-        ptr = tour_idx[0][-1].clone().detach()  # 当前第0辆无人机的位置。从第一辆无人机开始，取最后一个（其实只有一个元素）所在下标。（维度是batchsiz吗？？）
+        # ptr 大小B 1。ptr更新！！！更新为下一个无人机的当前位置。
+        ptr = tour_idx[0][-1].clone().detach()  # 当前第0辆无人机的位置。从第一辆无人机开始，取最后一个（其实只有一个元素）所在下标。
 
-        max_steps = sequence_size if self.mask_fn is None else 2000  # 如果设置mask函数，为了避免死循环，这是最大步数。
-        # distance = self.node_distance(static)
-        # Static elements only need to be processed once, and can be used across
-        # all 'pointing' iterations. When / if the dynamic elements change,
-        # their representations will need to get calculated again.
-        static_hidden = self.static_encoder(static)
-        dynamic_hidden = self.dynamic_encoder(dynamic)
+        max_steps = sequence_size if self.mask_fn is None else 1000  # 如果设置mask函数，为了避免死循环，这是最大步数。
+
+        static_hidden = self.static_encoder(static) # 只需要计算一次
 
         for _ in range(max_steps):  # 主循环
             if self.mask_fn is not None:
-                # mask = self.mask_fn(dynamic, ptr.data).detach()  # detach是分离出来，但是不需要梯度信息。
                 # 根据当前无人机结束新的访问，结合下一台无人机的。注意这个ptr和dynamic需要是新的,因为需要根据下一个无人机的当前位置，判断下一个点不能去哪。
-                # mask = self.mask_fn(dynamic, distance, next_car_ptr.data).detach()
                 mask = self.mask_fn(self.depot_num, dynamic, distance, ptr.data, car_id).detach()
 
             if not mask.byte().any():  # 如果全mask掉了就退出
                 break
 
-            # ... but compute a hidden rep for each element added to sequence
-            decoder_hidden = self.decoder(decoder_input)  # 编码当前位置xy静态信息
+            decoder_input = torch.gather(static, 2, ptr.view(-1, 1, 1).expand(-1, input_size, 1).to(
+                dynamic.device)).detach()  # 更新当前位置信息。
+
+            dynamic_hidden = self.dynamic_encoder(dynamic)  # 编码当前动态信息
+            decoder_hidden = self.decoder(decoder_input)  # 编码当前位置xy静态信息 (B, 2)
 
             # 指针网络。里面包含GRU
             probs, last_hh = self.pointer(static_hidden, dynamic_hidden, decoder_hidden,
                                           last_hh)  # 得到下一个点的（未mask）概率分布和隐状态。
             probs = F.softmax(probs + mask.log(), dim=1)  # mask操作+softmax Softmax的原因：因为π(a,s)是必须大于0的，用softmax把0映射成很小的数字
 
-            # When training, sample the next step according to its probability.
-            # During testing, we can take the greedy approach and choose highest
             if self.training:
                 try:
                     m = torch.distributions.Categorical(probs)
@@ -295,52 +285,40 @@ class DRL4TSP(nn.Module):
                 prob, ptr = torch.max(probs, 1)  # Greedy
                 logp = prob.log()  # B,1
 
-            # After visiting a node update the dynamic representation 选择好了下一个访问的点，访问，更新动态信息。
+            # 选择好了下一个访问的点，访问，更新动态信息。
             if self.update_fn is not None:
-                # dynamic = self.update_fn(dynamic, ptr.data)
-                # 获取最后一个访问的点
-                # last_visited = tour_idx[-1]
-                last_visited = tour_idx[car_id][-1]
+
+                # 获取当前位置
+                last_visited = tour_idx[car_id][-1] # 这个是当前位置的意思。
                 # 更新动态信息，传递最后一个访问的点
-                # dynamic = self.update_fn(dynamic, distance, ptr.data,
-                #                          last_visited)  # B 2 L 这里还是【当前小车】的load和当前小车的新一步ptr，更新地图里的load和demand
+
+                #  # B 2 L 这里还是【当前小车】的load和当前小车的新一步ptr，更新地图里的load和demand
                 dynamic = self.update_fn(self.depot_num, self.car_load, dynamic, distance, ptr.data,
                                          last_visited)
 
                 # 新增===dynamic中的旧load储存，更新新load。所以此后dynamic都是当前无人机访问下一个点后的新环境
                 car_load[car_id] = dynamic[:, 0, 0].clone()  # 随便取第一个仓库的load就好了，存到car_load数组里面。
+
+                # 意思应该是batch里面有些情况下，已经遍历完了，就让车强制留在仓库）
+                is_done = dynamic[:, 1].sum(1).eq(0).float()  # 如果所有点的需求加和=0，就说明done
+                logp = logp * (1. - is_done)  # 如果完成了，logp 也是0, 梯度就不会更新了
+
                 # 替换dynamic里的load！把load换成下一个无人机的load，但demand继承。
                 dynamic[:, 0] = car_load[(car_id + 1) % self.depot_num].unsqueeze(1).expand(-1, num_nodes)
 
-                dynamic_hidden = self.dynamic_encoder(dynamic)  # 得到当前无人机新访问一个点之后的动态环境的hidden
-
-                # Since we compute the VRP in minibatches, some tours may have
-                # number of stops. We force the vehicles to remain at the depot
-                # in these cases, and logp := 0 （意思应该是batch里面有些情况下，已经遍历完了，就让车强制留在仓库）
-                is_done = dynamic[:, 1].sum(1).eq(0).float()  # 如果所有点的需求加和=0，就说明done
-                logp = logp * (1. - is_done)  # 如果完成了，logp 也是0, 梯度就不会更新了。
-
             tour_logp.append(logp.unsqueeze(1))  # 每个时间t都要储存：因为为了计算整条路径出现的概率. T B 1
-            # tour_idx.append(ptr.data.unsqueeze(1))  # T B 1 # 增加tour idx索引
             tour_idx[car_id].append(ptr.data.unsqueeze(1))  # T B 1 把当前无人机的新访问的点保存起来。
-            # ptr=torch.tensor(tour_idx[(car_id+1)%num_car][-1])  #ptr 大小B 1。ptr更新！！！更新为下一个无人机的当前位置。
-            next_car_ptr = tour_idx[(car_id + 1) % self.depot_num][-1].clone().detach()  # 取出下一台无人机所在的点。
 
-            # 它的ptr是新的！！(改名为next_car_ptr
-            # decoder_input = torch.gather(static, 2, ptr.view(-1, 1, 1).expand(-1, input_size, 1).to('cuda')).detach()  # 更新当前位置信息。
-            decoder_input = torch.gather(static, 2, next_car_ptr.view(-1, 1, 1).expand(-1, input_size, 1).to(
-                dynamic.device)).detach()  # 更新当前位置信息。
-
-            # 车辆序号
+            ptr = tour_idx[(car_id + 1) % self.depot_num][-1].clone().detach()  # 取出下一台无人机所在的点。
+            # 车辆序号更新
             car_id = (car_id + 1) % self.depot_num
-            ptr = next_car_ptr
+
         else:
             print(f"达到最大迭代次数{max_steps}退出")
 
 
         if (dynamic[:,1,:]>0).any():# 如果仍然有需求
             raise ValueError("仍然有需求尚未满足")
-        # tour_idx = torch.cat(tour_idx, dim=1)  # (batch_size, seq_len)
 
         # tour_idx 大小：最外层是list，包含num depot 个元素，每个元素是batch*无人机飞行过node个数。
         tour_idx = [torch.cat(tour_idx[i], dim=1) for i in range(self.depot_num)]  # 包含了每一辆无人机的轨迹
@@ -419,7 +397,6 @@ def node_distance_shared(static, num_depots):
     '''
    是【完全共享仓库】版本.（可以在别人的仓库充电、最终停放）
     todo 修改了：目前版本是返回【点a-点b-点b最【远】的仓库】因为存在最近仓库被占用的情况。
-    todo【check一下画图】
     static的维度:应该是B，2，num_depots+num_city
     '''
     depot_positions = static[:, :, :num_depots]  # 维度应该是B，2，num_depots
@@ -487,9 +464,7 @@ def update_mask_shared(num_depots, dynamic, distance, current_idx, car_id):
     if at_depot.any():
         new_mask[at_depot.squeeze().nonzero(), :num_depots] = 0
 
-    # todo 我靠为什么你没有和independent代码一样，判断如果在城市就可以回来。
-    #  ？？哎不对，如果不加兜底mask所有其他仓库的话，意思应该就是"在城市就能访问任意仓库？”
-    #        # 晚上debug 一下……？？？
+
 
     ##############################
 
@@ -1090,11 +1065,11 @@ def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
             # Query the critic for an estimate of the reward(向评论家询问奖励的估计值)
             critic_est = critic(static, dynamic).view(-1)  # (B,)# todo 不是 这个真的有意义吗（）明明只输入了静态和动态环境，难道不是训练得都输出常数了。
             # 真实奖励值和估计奖励值的差，作为优势函数(这里是A2C中的advantage)
-            advantage = (reward - critic_est) # (B,) # todo 我靠你不会把return 当成Q又当做真实奖励吧
+            advantage = (reward - critic_est) # (B,) # todo 我靠这个advantage公式到底是谁-谁
             # actor_loss是优势函数乘以演员的动作概率分布，这个乘积表示每个动作的优势加权的动作概率。然后取平均值作为演员的损失
             actor_loss = torch.mean(advantage.detach() * tour_logp.sum(dim=1)) # tour_logp:(B，路程长度）.之所以要sum是为了求路径出现概率
             # critic_loss是根据优势函数的平方误差计算的
-            critic_loss = torch.mean(advantage ** 2) # todo 所以说其实critic 拟合的是reward 吗……
+            critic_loss = torch.mean(advantage ** 2) #  所以说其实critic 拟合的是Q(s,a)?
             # 0梯度反向传播
             actor_optim.zero_grad()
             actor_loss.backward()
