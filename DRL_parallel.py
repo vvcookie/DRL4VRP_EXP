@@ -29,13 +29,12 @@ from torch.utils.data import DataLoader
 
 
 # from Greedy_VRP import run_greedy_VRP
-from Greedy_VRP_share import  run_greedy_VRP
+
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 if device == 'cuda': # 一定要放在import matplotlib.pyplot之前
 
     import matplotlib
-
     matplotlib.use('Agg')  # 防止尝试使用图形界面，允许在没有图形界面的环境中运行。
 
 import matplotlib.pyplot as plt
@@ -219,7 +218,7 @@ class DRL4TSP(nn.Module):
             Defines the last hidden state for the RNN
         """
         # todo ---这是同时决策版本。----------------------------------------------------------
-
+        # TSPforward 快速跳转用
         # 这里已经是坐标的形式了！！！
         batch_size, input_size, sequence_size = static.size()
         distance = self.node_distance_fn(static, self.depot_num)  # (B,num_node,num_node) # node 2 node 的距离
@@ -259,7 +258,9 @@ class DRL4TSP(nn.Module):
             for car_id in range(self.depot_num):
 
                 # todo √替换dynamic里的load！把load换成下一个无人机的load，但demand不变，因为是同一个环境。。
-                dynamic[:, 0] = car_load[car_id].unsqueeze(1).expand(-1, num_nodes)
+                dynamic = dynamic.clone()
+                dynamic[:, 0] = car_load[car_id].unsqueeze(1).expand(-1, num_nodes) # safe
+
                 # todo √ current_idx 更新,car id 更新。
                 current_idx = tour_idx[car_id][-1].clone().detach()# 当前所在id
 
@@ -302,10 +303,9 @@ class DRL4TSP(nn.Module):
                 tem_next_ptr.append(ptr)
                 tem_next_logp.append(logp)
 
-
                 # todo-------------------从这里截断，结束for every uav循环。-----------------
-            print("tem_next_ptr:",tem_next_ptr)
-            print("tem_next_logp:",tem_next_logp)
+            # print("tem_next_ptr:",tem_next_ptr)
+            # print("tem_next_logp:",tem_next_logp)
 
             # todo：冲突决策。应该把这个放在楼上的外面？
             #  如果有点和其他的点的ptr重复：
@@ -313,7 +313,7 @@ class DRL4TSP(nn.Module):
             #    选出这些点里面比top 1 logp小的位置，然后让这些点重新使用mask掉点后选点（要使用对应的dynamic、ptr）
             #      保存刚刚新选的点
 
-
+            # dynamic = dynamic_home[0]
             # todo √-------------for every uav循环：储存本轮的访问计划、更新地图-----------------
             for car_id in range(self.depot_num):
                 # 读取当前位置；更新dynamic；保存现在的load；换成下一个车的load；更新isdone；（ptr和logp保存过了）；更新下一车ptr
@@ -323,37 +323,40 @@ class DRL4TSP(nn.Module):
                     # 获取当前位置
                     last_visited = tour_idx[car_id][-1] # 这个是当前位置的意思。
                     # todo √获得下一步的点（已解决冲突）
-                    ptr = tem_next_ptr[car_id].clone().detach()  # 无人机下一步去往的店id（要clone().detach()吗
+                    ptr = tem_next_ptr[car_id].clone().detach()  # 无人机下一步去往的id todo（要clone().detach()吗
                     # todo √把本uav的load装进dynamic
+                    dynamic=dynamic.clone()
                     dynamic[:, 0] = car_load[car_id].unsqueeze(1).expand(-1, num_nodes)
+
 
                     # 更新dynamic。B 2 L 这里还是当前车的load和新一步ptr，更新地图里的load和demand
                     dynamic = self.update_fn(self.depot_num, self.car_load, dynamic, distance, ptr.data,
                                              last_visited)
 
-                # dynamic中的旧load储存，更新新load。所以此后dynamic都是当前无人机访问下一个点后的新环境
-                car_load[car_id] = dynamic[:, 0, 0].clone()  # 随便取第一个仓库的load就好了，存到car_load数组里面。
+                    # dynamic中的旧load储存，更新新load。所以此后dynamic都是当前无人机访问下一个点后的新环境
+                    car_load[car_id] = dynamic[:, 0, 0].clone().detach()  # 随便取第一个仓库的load就好了，存到car_load数组里面。
 
-                # 意思应该是batch里面有些情况下，已经遍历完了，就让车强制留在仓库）
-                is_done = dynamic[:, 1].sum(1).eq(0).float()  # 如果所有点的需求加和=0，就说明done
-                logp= tem_next_logp[car_id]
-                logp = logp * (1. - is_done)  # 如果完成了，logp 也是0, 梯度就不会更新了
+                    # 意思应该是batch里面有些情况下，已经遍历完了，就让车强制留在仓库）
+                    is_done = dynamic[:, 1].sum(1).eq(0).float()  # 如果所有点的需求加和=0，就说明done
+                    logp= tem_next_logp[car_id]
+                    logp = logp * (1. - is_done)  # 如果完成了，logp 也是0, 梯度就不会更新了
 
-                # # 替换dynamic里的load！把load换成下一个无人机的load，但demand继承。【取消了，放在上面更新】
-                # dynamic[:, 0] = car_load[(car_id + 1) % self.depot_num].unsqueeze(1).expand(-1, num_nodes)
+                    # dynamic[:, 0] = car_load[(car_id + 1) % self.depot_num].unsqueeze(1).expand(-1, num_nodes) # todo 可行方案
+
 
                 tour_logp.append(logp.unsqueeze(1))  # 每个时间t都要储存：因为为了计算整条路径出现的概率. T B 1
                 tour_idx[car_id].append(ptr.data.unsqueeze(1))  # T B 1 把当前无人机的新访问的点保存起来。
 
-                # current_idx = tour_idx[(car_id + 1) % self.depot_num][-1].clone().detach()# 取出下一台无人机所在的点。【取消了，放在上面更新】
-                # 车辆序号更新
-                #car_id = (car_id + 1) % self.depot_num
 
         else:
+            print(tour_idx[4])
+
             print(f"达到最大迭代次数{max_steps}退出")
 
 
         if (dynamic[:,1,:]>0).any():# 如果仍然有需求
+            a=torch.nonzero(dynamic[:,1,:])
+            print(a)
             raise ValueError("仍然有需求尚未满足")
 
         # tour_idx 大小：最外层是list，包含num depot 个元素，每个元素是batch*无人机飞行过node个数。
@@ -700,12 +703,8 @@ def update_mask_independent(num_depots, dynamic, n2n_distance, current_idx, car_
             current_location = current_idx[sample_idx]  # 找到当前位置
             if current_location < num_depots:  # 如果当前在仓库
                 # 仅允许访问当前所在的仓库
-                # new_mask[combined.nonzero(), :] = 0.
-                new_mask[sample_idx, current_location] = 1.
-            # else:
-            #     # 如果不在仓库，但没有需求或者载重为0，则允许访问【demand不为0的仓库】
-            #     #new_mask[sample_idx, :self.num_depots] = 1.
-            #     new_mask[sample_idx * torch.ones_like(demands[sample_idx], dtype=torch.long), demands[sample_idx] != 0] = 1.
+                new_mask[sample_idx, current_location] = 1. # 其实current_location等价于car id
+
 
     # 判断是否存在某一行的mask全为0####################
     all_zero_mask = (new_mask == 0).all(dim=1)
@@ -719,6 +718,15 @@ def update_mask_independent(num_depots, dynamic, n2n_distance, current_idx, car_
         # 将这些行中chosen_idx(当前位置即仓库位置？）对应位置的mask设为1
         new_mask[all_zero_indices, current_idx[all_zero_indices]] = 1
 
+    # # 检查是否有把当前位置的mask设置成1： # fixme:对应demands不为0就非常有问题了……为什么没更新啊兄弟！！！
+    # check_new_mask=new_mask[torch.arange(n2n_distance.size(0)), current_idx.squeeze(1)]
+    # if check_new_mask.any():
+    #     print("city mask 异常：", check_new_mask)
+    #     print(f"current idx:{current_idx.squeeze(1)}")
+    #     print(f"对应demands为：{demands[torch.arange(n2n_distance.size(0)), current_idx.squeeze(1)]}")
+    #     raise ValueError(f"城市的current idx 的mask为1:{check_new_mask}\n",)
+    # else:
+    #     print("city mask 正常：",check_new_mask)
     return new_mask.float()
 
 
@@ -1058,7 +1066,7 @@ def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
     now = datetime.datetime.now()
     format_now = '%s' % now.month + "_" + '%s' % now.day + "_" + '%s' % now.hour + "_" + '%s' % now.minute + "_" + '%s' % now.second
 
-    save_dir = os.path.join(current_dir, task + "2_train_log", '%d' % num_city, format_now)  # ./vrp/numnode/time
+    save_dir = os.path.join(current_dir, task + "parallel_train_log", '%d' % num_city, format_now)  # ./vrp/numnode/time
     # 创建能够保存训练中checkpoint的文件夹
     checkpoint_dir = os.path.join(save_dir, 'train_checkpoints')  # /vrp/numnode/time/checkpoints
     if not os.path.exists(checkpoint_dir):
@@ -1185,8 +1193,8 @@ def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
         critic_save_path = os.path.join(epoch_dir, 'critic.pt')  #./ vrp_numnode_time//checkpoints/0/critic.pt
         torch.save(critic.state_dict(), critic_save_path)
 
-        # Save rendering of validation set tours(把验证集数据放入validation中，主要获得索引并且绘图)
-        # valid_dir = os.path.join(save_dir, "valid_picture", '%s' % epoch) #/vrp_numnode_time/0
+        # -------------------Valid------------------
+        print(f"Train {epoch} ends. Start valid {epoch}.")
         valid_dir = os.path.join(save_dir, "valid_picture")  # test去掉后面的epoch
 
         # 每一个epoch validate一次。
@@ -1370,7 +1378,7 @@ def run_multi_alg_test(share_depot, args, algorithm):
     # print('DRL:Average tour length in test set: ', test_out)
 
     algorithm_result={}
-
+    from Greedy_VRP_share import run_greedy_VRP
     # -----------------------------------------------------------------Greedy
     if "greedy" in algorithm or "Greedy" in algorithm:
         reward_greedy = run_greedy_VRP(test_data.static, args.num_city, args.depot_num,share=share_depot)
@@ -1551,20 +1559,20 @@ if __name__ == '__main__':
     parser.add_argument('--checkpoint', default=None)
     parser.add_argument('--test', action='store_true', default=False)
     parser.add_argument('--task', default='vrp')
-    parser.add_argument('--nodes', dest='num_city', default=10, type=int)  #todo 对齐#########
+    parser.add_argument('--nodes', dest='num_city', default=50, type=int)  #todo 对齐#########
     # parser.add_argument('--actor_lr', default=5e-4, type=float)
     # parser.add_argument('--critic_lr', default=5e-4, type=float)
     parser.add_argument('--actor_lr', default=1e-4, type=float)  # 学习率，现在在训练第4epoch，我手动改了一下
     parser.add_argument('--critic_lr', default=1e-4, type=float)
     parser.add_argument('--max_grad_norm', default=2., type=float)
-    parser.add_argument('--batch_size', default=8, type=int)  #fixme#########################
+    parser.add_argument('--batch_size', default=64, type=int)  #fixme#########################
     # parser.add_argument('--batch_size', default=8, type=int) ##########
     parser.add_argument('--hidden', dest='hidden_size', default=128, type=int)
     parser.add_argument('--dropout', default=0.1, type=float)
     parser.add_argument('--layers', dest='num_layers', default=1, type=int)
-    parser.add_argument('--train-size', default=100, type=int)  #fixme!!!!!!!!!!!!
-    parser.add_argument('--valid-size', default=1000, type=int)
-    parser.add_argument('--depot_num', default=3, type=int)  # todo ###############
+    parser.add_argument('--train-size', default=1000000, type=int)  #fixme!!!!!!!!!!!!
+    parser.add_argument('--valid-size', default=1000, type=int) # todo ……是valid里面有些阳历过不了
+    parser.add_argument('--depot_num', default=5, type=int)  # todo ###############
 
     # 解析为args
     args = parser.parse_known_args()[0]  # colab环境跑使用
@@ -1573,10 +1581,13 @@ if __name__ == '__main__':
     # --------------------------------------------------------------------
     # 设置checkpoint路径
     share = False      # todo 检查#############
-    if share:
-        args.checkpoint = os.path.join("trained_model", "total_shared_w200")
-    else:
-        args.checkpoint = os.path.join("trained_model", "trained_w200")
+    # if share:
+    #     args.checkpoint = os.path.join("trained_model", "total_shared_w200")
+    # else:
+    #     args.checkpoint = os.path.join("trained_model", "trained_w200")
+
+    # print("训练记得删掉")
+    # torch.autograd.set_detect_anomaly(True)
 
     print("---------这是同时决策版本 py---------")
     reward_rl=run_RL_exp(share, args)

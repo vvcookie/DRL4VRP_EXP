@@ -1149,8 +1149,9 @@ def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
         critic_save_path = os.path.join(epoch_dir, 'critic.pt')  #./ vrp_numnode_time//checkpoints/0/critic.pt
         torch.save(critic.state_dict(), critic_save_path)
 
-        # Save rendering of validation set tours(把验证集数据放入validation中，主要获得索引并且绘图)
-        # valid_dir = os.path.join(save_dir, "valid_picture", '%s' % epoch) #/vrp_numnode_time/0
+
+        # -------------------Valid------------------
+        print(f"Train {epoch} ends. Start valid {epoch}.")
         valid_dir = os.path.join(save_dir, "valid_picture")  # test去掉后面的epoch
 
         # 每一个epoch validate一次。
@@ -1515,7 +1516,7 @@ if __name__ == '__main__':
     parser.add_argument('--checkpoint', default=None)
     parser.add_argument('--test', action='store_true', default=False)
     parser.add_argument('--task', default='vrp')
-    parser.add_argument('--nodes', dest='num_city', default=20, type=int)  #todo 对齐#########
+    parser.add_argument('--nodes', dest='num_city', default=10, type=int)  #todo 对齐#########
     # parser.add_argument('--actor_lr', default=5e-4, type=float)
     # parser.add_argument('--critic_lr', default=5e-4, type=float)
     parser.add_argument('--actor_lr', default=1e-4, type=float)  # 学习率，现在在训练第4epoch，我手动改了一下
@@ -1527,8 +1528,8 @@ if __name__ == '__main__':
     parser.add_argument('--dropout', default=0.1, type=float)
     parser.add_argument('--layers', dest='num_layers', default=1, type=int)
     parser.add_argument('--train-size', default=100, type=int)  #fixme!!!!!!!!!!!!
-    parser.add_argument('--valid-size', default=10, type=int)
-    parser.add_argument('--depot_num', default=2, type=int)  # todo ###############
+    parser.add_argument('--valid-size', default=1000, type=int)
+    parser.add_argument('--depot_num', default=5, type=int)  # todo ###############
 
     # 解析为args
     args = parser.parse_known_args()[0]  # colab环境跑使用
@@ -1536,7 +1537,7 @@ if __name__ == '__main__':
     args.test = True
     # --------------------------------------------------------------------
     # 设置checkpoint路径
-    share = True     # todo 检查#############
+    share = True      # todo 检查#############
     if share:
         args.checkpoint = os.path.join("trained_model", "total_shared_w200")
     else:
