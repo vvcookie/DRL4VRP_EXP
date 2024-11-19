@@ -243,7 +243,7 @@ class DRL4TSP(nn.Module):
         # # ptr 大小B 1。
         # current_idx = tour_idx[0][-1].clone().detach()  # 当前第0辆无人机的位置。从第一辆无人机开始，取最后一个（其实只有一个元素）所在下标。
 
-        max_steps = sequence_size if self.mask_fn is None else 1000  # 如果设置mask函数，为了避免死循环，这是最大步数。
+        max_steps = sequence_size if self.mask_fn is None else 500  # todo 如果设置mask函数，为了避免死循环，这是最大步数。
 
         self.static_hidden = self.static_encoder(static) # 只需要计算一次
 
@@ -320,30 +320,28 @@ class DRL4TSP(nn.Module):
             duplicates_mask = self.get_duplicate_mask(tem_next_ptr2,tem_next_logp2)
 
             while duplicates_mask.any():
-                print("find duplicates")
+                # print("find duplicates")
                 for batch_id,p in enumerate(zip(tem_next_ptr2,tem_next_logp2)):
-                    row_ptr,row_logp=p #??好像用不到啊
+                    row_ptr,row_logp=p
                     # 找出本行里面是否有重复元素
                     if duplicates_mask[batch_id].any():  # 如果有，遍历选到重复点的car：
                         # √ 在duplicates_mask里面为True的元素就是 “ptr重复且logp不是同数字的top1的元素”
+                        # print("row_ptr修改前：",row_ptr)
                         for duplicate_car in duplicates_mask[batch_id].nonzero():
-                            duplicate_car=duplicate_car.item()
-                            new_ptr, new_logp = self.get_next_ptr_by_mask(duplicate_car, mask_home, probs_home,batch_id)
-                            tem_next_ptr2[batch_id][duplicate_car]=new_ptr # todo ……小心一点……返回的是一个元素.
-                            tem_next_logp2[batch_id][duplicate_car]=new_logp
+                            duplicate_car=duplicate_car.item() # duplicate_car是本行中需要重新选点的car id（等价于坐标）
+                            new_ptr, new_logp = self.get_next_ptr_by_mask(row_ptr, duplicates_mask, duplicate_car, mask_home, probs_home, batch_id,tour_idx)
+                            row_ptr[duplicate_car]=new_ptr.clone() # todo ……小心一点……返回的是一个元素.
+                            row_logp[duplicate_car]=new_logp.clone()
+                            # ?????????????????????????可以直接写成楼下吗
+                            tem_next_ptr[duplicate_car][batch_id]=new_ptr.clone()
+                            tem_next_logp[duplicate_car][batch_id]=new_logp.clone()
+                        # print("row_ptr修改后：", row_ptr)
 
-                # todo :把tem_next_ptr2的维度改回来………………
-
-
-                # todo：
-                #  如果有点和其他的点的ptr重复：
-                #     标记处那些点是重复元素。（把非重复元素作为访问过的点，mask掉，
-                #    选出这些点里面比top 1 logp小的位置，然后让这些点重新使用mask掉点后选点（要使用对应的dynamic、ptr）
-                #      保存刚刚新选的点！！！！！！！！！！
+                # todo :把tem_next_ptr2的维度改回来………………？？？
 
                 duplicates_mask = self.get_duplicate_mask(tem_next_ptr2,tem_next_logp2) # 刷新重复元素
             # todo ---------处理冲突结束----------------
-
+            # print("tem_next_ptr2:\n",tem_next_ptr2)
             # todo √-------------for every uav循环：储存本轮的访问计划、更新地图-----------------
             for car_id in range(self.depot_num):
                 # 读取当前位置；更新dynamic；保存现在的load；换成下一个车的load；更新isdone；（ptr和logp保存过了）；更新下一车ptr
@@ -373,9 +371,7 @@ class DRL4TSP(nn.Module):
                     tour_logp.append(logp.unsqueeze(1))  # 每个时间t都要储存：因为为了计算整条路径出现的概率. T B 1
                     tour_idx[car_id].append(ptr.data.unsqueeze(1))  # T B 1 把当前无人机的新访问的点保存起来。
 
-
         else:
-            print(tour_idx[4])
 
             print(f"达到最大迭代次数{max_steps}退出")
 
@@ -383,14 +379,16 @@ class DRL4TSP(nn.Module):
         if (dynamic[:,1,:]>0).any():# 如果仍然有需求
             a=torch.nonzero(dynamic[:,1,:])
             print(a)
-            raise ValueError("仍然有需求尚未满足")
+            raise ValueError("仍然有需求尚未满足：",a)
+        else:
+            print("完成所有需求。")
 
         # tour_idx 大小：最外层是list，包含num depot 个元素，每个元素是batch*无人机飞行过node个数。
         tour_idx = [torch.cat(tour_idx[i], dim=1) for i in range(self.depot_num)]  # 包含了每一辆无人机的轨迹
         tour_logp = torch.cat(tour_logp, dim=1)  # (batch_size, seq_len)
         return tour_idx, tour_logp
 
-    def get_next_ptr_by_mask(self,car_id,mask_home,probs_home,batch_id):
+    def get_next_ptr_by_mask(self, row_ptr, duplicates_mask, car_id, mask_home, probs_home, batch_id,tour_list):
         '''
         在这里面更新mask、、、结合原始的probs分布重新选一个点？
         mask:旧的mask【看来又要mask home了或者时间换空间
@@ -400,13 +398,26 @@ class DRL4TSP(nn.Module):
         mask=mask_home[car_id][batch_id].clone() # 目前这是一个元素……# # (num_node,)
         # print(f"probs:{probs}") # (num_node,)
         # print(f"mask:{mask}") # (num_node,)
-        # todo : 用旧的mask直接更新。【这里会出现梯度的问题吗……mask应该不会计算梯度的。】【注意mask和probs拷贝问题？】
+        # todo : 用旧的mask直接更新。【这里会出现梯度的问题吗……mask应该不会计算梯度的。】
+        duplicates_mask_row=duplicates_mask[batch_id] #duplicates_mask True为重复元素
+        visited_id=row_ptr[torch.logical_not(duplicates_mask_row)] #标记处那些点是非重复元素。（把非重复元素作为访问过的点，mask掉，
+        # todo 草，直接mask[row_ptr]=False 不就好了……
+        mask[visited_id]=False # 把其他人访问过的改为False
 
         if not mask.byte().any():  # 如果全mask掉了就退出
-            raise ValueError("not mask.byte().any() in get_next_ptr()")
+            # todo理论上来说 不可能有点在这里被全部mask掉：是因为在最后阶段，，其他点都被访问了，所以不得不【留在仓库】
+            # print(f"报错的修改前:\nmask={mask_home[car_id][batch_id]}\nrow_ptr:{row_ptr}\nduplicates_mask_row:{duplicates_mask_row}")
+            # print(f"visited_id{visited_id}")
+            # print(f"报错的修改后：mask={mask}")
+            current_pos = tour_list[car_id][-1][batch_id].clone().detach()  # 当前所在id
+            mask[current_pos]=True
+            # print(f"可以停留在仓库的修改后：mask={mask}") # todo test……
 
-        # probs = F.softmax(probs + mask.log(), dim=1) # todo ……这个维度……
-        probs = F.softmax(probs + mask.log(), dim=0)  # todo ……这个维度……
+        if not mask.byte().any():  # 如果全mask掉了就退出
+            raise ValueError(f"not mask.byte().any() in get_next_ptr()：{mask}")
+
+
+        probs = F.softmax(probs + mask.log(), dim=0)
         # probs = F.softmax(probs, dim=1) + mask.log() # fixme有没有更合理的？不知道如果使用这种会怎么样……
 
         if self.training:
@@ -416,31 +427,48 @@ class DRL4TSP(nn.Module):
                 raise ValueError("Error: m = torch.distributions.Categorical(probs)")
             ptr = m.sample()  # 根据上面的概率分布，采样一个点。大小B
 
-            while not torch.gather(mask, 1, ptr.data.unsqueeze(1)).byte().all():
+            while not torch.gather(mask, 0, ptr.data.unsqueeze(0)).byte().all():
                 ptr = m.sample()
 
             logp = m.log_prob(ptr)  # 记录这个点的概率……
         else:
-            # todo？？？？？？？？？？？？？
             # prob, ptr = torch.max(probs, 1)  # Greedy
-            prob, ptr = torch.max(probs,0) # todo 维度
-            logp = prob.log()  # B,1
+            prob, ptr = torch.max(probs,0)
+            logp = prob.log()  # 1
 
         return ptr,logp
 
-    def get_duplicate_mask(self,next_ptr_matrix,next_logp_matrix):
-        # 创建一个和 tensor 同样大小的布尔 tensor，初始值为 False
+    # def get_duplicate_mask(self,next_ptr_matrix,next_logp_matrix):
+    #     # 创建一个和 tensor 同样大小的布尔 tensor，初始值为 False
+    #     duplicates_mask = torch.zeros_like(next_ptr_matrix, dtype=torch.bool)
+    #     for i in range(next_ptr_matrix.size(0)):
+    #         row = next_ptr_matrix[i]
+    #         logprow=next_logp_matrix[i]
+    #         unique_elements, counts = torch.unique(row, return_counts=True)  # 统计每行元素的出现次数
+    #         duplicate_elements = unique_elements[counts > 1]  # 找到重复的元素 (出现次数大于 1)
+    #         for element in duplicate_elements:  # 对于每一种重复元素，标记为 True todo ……不对应该单独看每个数字
+    #             duplicates_mask[i] = (row == element)
+    #             log_max=torch.max(logprow[duplicates_mask[i]])
+    #             max_logp_car=(logprow==log_max) # todo  我服了训练初期是均匀分布。
+    #             duplicates_mask[i]=duplicates_mask[i] & (torch.logical_not(max_logp_car)) # 只有logp并非最大且重复元素需要True
+    #
+    #     return duplicates_mask
+    def get_duplicate_mask(self,next_ptr_matrix, next_logp_matrix):
+        # 创建一个和 tensor 同样大小的布尔 tensor，
         duplicates_mask = torch.zeros_like(next_ptr_matrix, dtype=torch.bool)
         for i in range(next_ptr_matrix.size(0)):
-            row = next_ptr_matrix[i]
-            logprow=next_logp_matrix[i]
-            unique_elements, counts = torch.unique(row, return_counts=True)  # 统计每行元素的出现次数
+            ptr_row = next_ptr_matrix[i]
+            logp_row = next_logp_matrix[i]
+            unique_elements, counts = torch.unique(ptr_row, return_counts=True)  # 统计每行元素的出现次数
             duplicate_elements = unique_elements[counts > 1]  # 找到重复的元素 (出现次数大于 1)
             for element in duplicate_elements:  # 对于每一种重复元素，标记为 True
-                duplicates_mask[i] = (row == element)
-                log_max=torch.max(logprow[duplicates_mask[i]])
-                max_logp_car=(logprow==log_max)
-                duplicates_mask[i]=duplicates_mask[i] & (torch.logical_not(max_logp_car)) # 只有logp并非最大且重复元素需要True
+                duplicates_this_num = (ptr_row == element)  # 找到本重复元素
+                max_logp = torch.max(logp_row[duplicates_this_num])  # 最大的logp
+                max_logp_car = (logp_row == max_logp) & duplicates_this_num  # 找到最大元素的位置 （bool）
+                if sum(max_logp_car) != 1:
+                    max_logp_car[max_logp_car.nonzero()[1:]] = False
+                duplicates_mask[i] = duplicates_mask[i] | (
+                            duplicates_this_num & (torch.logical_not(max_logp_car)))  # 只有logp并非最大且重复元素需要True
 
         return duplicates_mask
 
@@ -1649,14 +1677,14 @@ if __name__ == '__main__':
     parser.add_argument('--hidden', dest='hidden_size', default=128, type=int)
     parser.add_argument('--dropout', default=0.1, type=float)
     parser.add_argument('--layers', dest='num_layers', default=1, type=int)
-    parser.add_argument('--train-size', default=2, type=int)  #fixme!!!!!!!!!!!!
-    parser.add_argument('--valid-size', default=2, type=int)
+    parser.add_argument('--train-size', default=100, type=int)  #fixme!!!!!!!!!!!!
+    parser.add_argument('--valid-size', default=100, type=int)
     parser.add_argument('--depot_num', default=5, type=int)  # todo ###############
 
     # 解析为args
     args = parser.parse_known_args()[0]  # colab环境跑使用
     # --------------------------------------------------------------------
-    args.test = True
+    args.test = False
     # --------------------------------------------------------------------
     # 设置checkpoint路径
     share = True      # todo 检查#############
