@@ -32,10 +32,12 @@ from torch.utils.data import DataLoader
 
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-if device == 'cuda': # 一定要放在import matplotlib.pyplot之前
-
+if device == torch.device('cuda'):  # 一定要放在import matplotlib.pyplot之前
+    print("using cuda")
     import matplotlib
     matplotlib.use('Agg')  # 防止尝试使用图形界面，允许在没有图形界面的环境中运行。
+else:
+    print("using cpu")
 
 import matplotlib.pyplot as plt
 
@@ -218,7 +220,7 @@ class DRL4TSP(nn.Module):
         last_hh: Array of size (batch_size, num_hidden)
             Defines the last hidden state for the RNN
         """
-        # todo √---这是同时决策版本。----------------------------------------------------------
+        # ---这是同时决策版本。------------------------------------------------------
         # 这里已经是坐标的形式了！！！
         batch_size, input_size, sequence_size = static.size()
         distance = self.node_distance_fn(static, self.depot_num)  # (B,num_node,num_node) # node 2 node 的距离
@@ -242,14 +244,13 @@ class DRL4TSP(nn.Module):
         # # ptr 大小B 1。
         # current_idx = tour_idx[0][-1].clone().detach()  # 当前第0辆无人机的位置。从第一辆无人机开始，取最后一个（其实只有一个元素）所在下标。
 
-        max_steps = sequence_size if self.mask_fn is None else 500  # todo 如果设置mask函数，为了避免死循环，这是最大步数。
+        max_steps = sequence_size if self.mask_fn is None else 500  # 如果设置mask函数，为了避免死循环，这是最大步数。
 
         self.static_hidden = self.static_encoder(static) # 只需要计算一次
 
         probs_home= [None] * self.depot_num
         mask_home = [None] * self.depot_num
         for _ in range(max_steps):  # 主循环
-            # todo √：增加for car_id2 in range(self.depot_num)
             tem_next_ptr=[] # 维度是list:num_depot,内部元素(B,)
             tem_next_logp=[]# 维度是list:num_depot,内部元素(B,)
 
@@ -259,11 +260,11 @@ class DRL4TSP(nn.Module):
 
             for car_id in range(self.depot_num):
 
-                # todo √替换dynamic里的load！把load换成下一个无人机的load，但demand不变，因为是同一个环境。。
-                dynamic = dynamic.clone() # todo 完蛋了这个地方是不是应该用detach的……因为clone之后的梯度会叠加。
+                # 替换dynamic里的load！把load换成下一个无人机的load，但demand不变，因为是同一个环境。。
+                dynamic = dynamic.clone() # todo ？？？？？？？？完蛋了这个地方是不是应该用detach的……因为clone之后的梯度会叠加。
                 dynamic[:, 0] = car_load[car_id].unsqueeze(1).expand(-1, num_nodes) # safe
 
-                # todo √ current_idx 更新,car id 更新。
+                # current_idx 更新,car id 更新。
                 current_idx = tour_idx[car_id][-1].clone().detach()# 当前所在id
 
                 if self.mask_fn is not None:
@@ -301,27 +302,25 @@ class DRL4TSP(nn.Module):
                     while not torch.gather(mask, 1, ptr.data.unsqueeze(1)).byte().all():
                         ptr = m.sample()
 
-                    logp = m.log_prob(ptr) # 记录这个点的概率…… # fixme 修改的地方在后面。
+                    logp = m.log_prob(ptr) # 记录这个点的概率……
                 else:
                     prob, ptr = torch.max(probs, 1)  # Greedy
                     logp = prob.log()  # B,1
 
-                # todo ：√记录这个无人机选的点ptr 和logp……………………
+                # 记录这个无人机选的点ptr 和logp……………………
                 tem_next_ptr.append(ptr)
                 tem_next_logp.append(logp)
 
-                # todo√-------------------从这里截断，结束for every uav循环。-----------------
+                # -------------------从这里截断，结束for every uav循环。-----------------
 
             # 快速跳转用
-            # todo ---------处理冲突----------------
+            # ---------处理冲突----------------
             # tem_next_ptr 是len=num_car,内部元素(B,)的列表。
             tem_next_ptr2=torch.transpose(torch.stack(tem_next_ptr),1,0).detach()# tensor(B,num_depot)
             tem_next_logp2=torch.transpose(torch.stack(tem_next_logp),1,0).detach() # tensor(B,num_depot)
 
-
             duplicates_mask = self.get_duplicate_mask(tem_next_ptr2,tem_next_logp2)
 
-            #todo ^
             tem_count=0
             while duplicates_mask.any():
                 if tem_count>100:
@@ -339,11 +338,11 @@ class DRL4TSP(nn.Module):
 
                             duplicate_car=duplicate_car.item() # duplicate_car是本行中需要重新选点的car id（等价于坐标）
                             new_ptr, new_logp = self.get_next_ptr_by_mask(row_ptr, duplicates_mask, duplicate_car, mask_home, probs_home, batch_id,tour_idx)
-                            row_ptr[duplicate_car]=new_ptr.clone() # todo ……小心一点……返回的是一个元素.
+                            row_ptr[duplicate_car]=new_ptr.clone()
                             row_logp[duplicate_car]=new_logp.clone()
                             # ?????????????????????????可以直接写成楼下吗
                             copy_tour=tem_next_ptr[duplicate_car].clone()
-                            copy_tour[batch_id]=new_ptr # todo测试……
+                            copy_tour[batch_id]=new_ptr # todo测试……？？？？？？？？？？？？？？
                             tem_next_ptr[duplicate_car]=copy_tour
                             # tem_next_ptr[duplicate_car][batch_id]=new_ptr # fixme 就是这行赋值导致的出错
                             tem_next_logp[duplicate_car][batch_id]=new_logp#.clone()
@@ -353,20 +352,18 @@ class DRL4TSP(nn.Module):
                 # todo :把tem_next_ptr2的维度改回来………………？？？
 
                 duplicates_mask = self.get_duplicate_mask(tem_next_ptr2,tem_next_logp2) # 刷新重复元素
-            # todo ---------处理冲突结束----------------
+            # ---------处理冲突结束----------------
 
-            # todo √-------------for every uav循环：储存本轮的访问计划、更新地图-----------------
+            # -------------for every uav循环：储存本轮的访问计划、更新地图-----------------
             for car_id in range(self.depot_num):
                 # 读取当前位置；更新dynamic；保存现在的load；换成下一个车的load；更新isdone；（ptr和logp保存过了）；更新下一车ptr
                 # 选择好了下一个访问的点，访问，更新动态信息。
                 if self.update_fn is not None:
-
-                    # 获取当前位置
-                    last_visited = tour_idx[car_id][-1] # 这个是当前位置的意思。
-                    # todo √获得下一步的点（已解决冲突）
+                    last_visited = tour_idx[car_id][-1] # 获取当前位置
+                    # 获得下一步的点（已解决冲突）
                     ptr = tem_next_ptr[car_id].clone().detach()  # 无人机下一步去往的id
-                    # todo √把本uav的load装进dynamic
-                    dynamic=dynamic.clone()
+                    # 把本uav的load装进dynamic
+                    dynamic=dynamic.clone() # todo ？一定要加这个吗【话说就不能直接修改整个tensor吗！测试！！】
                     dynamic[:, 0] = car_load[car_id].unsqueeze(1).expand(-1, num_nodes)
 
                     # 更新dynamic。B 2 L 这里还是当前车的load和新一步ptr，更新地图里的load和demand
@@ -411,24 +408,21 @@ class DRL4TSP(nn.Module):
         probs=probs_home[car_id][batch_id].clone() # (num_node,)
         mask=mask_home[car_id][batch_id].clone() # 目前这是一个元素……# # (num_node,)
 
-        # todo : 用旧的mask直接更新。【这里会出现梯度的问题吗……mask应该不会计算梯度的。】
+        # 用旧的mask叠加现在新的需要mask掉的重复点。
         duplicates_mask_row=duplicates_mask[batch_id] #duplicates_mask True为重复元素
         visited_id=row_ptr[torch.logical_not(duplicates_mask_row)] #标记处那些点是非重复元素。（把非重复元素作为访问过的点，mask掉，
-        # todo 草，直接mask[row_ptr]=False 不就好了……
+        # todo ？？？？？？？？草，直接mask[row_ptr]=False 不就好了……
         mask[visited_id]=False # 把其他人访问过的改为False
 
-        if not mask.byte().any():  # 如果全mask掉了就退出
-            # todo理论上来说 不可能有点在这里被全部mask掉：是因为在最后阶段，，其他点都被访问了，所以不得不【留在仓库】
-            # print(f"报错的修改前:\nmask={mask_home[car_id][batch_id]}\nrow_ptr:{row_ptr}\nduplicates_mask_row:{duplicates_mask_row}")
+        if not mask.byte().any():   # 是因为在最后阶段，，其他点都被访问了，所以不得不【留在仓库】
             current_pos = tour_list[car_id][-1][batch_id].clone().detach()  # 当前所在id
             mask[current_pos]=True
 
         if not mask.byte().any():  # 如果全mask掉了就退出
             raise ValueError(f"not mask.byte().any() in get_next_ptr()：{mask}")
 
-
         probs = F.softmax(probs + mask.log(), dim=0)
-        # probs = F.softmax(probs, dim=1) + mask.log() # fixme有没有更合理的？不知道如果使用这种会怎么样……
+        # probs = F.softmax(probs, dim=1) + mask.log() # fixme ？？？？？？？有没有更合理的？不知道如果使用这种会怎么样……
 
         if self.training:
             try:
@@ -448,21 +442,7 @@ class DRL4TSP(nn.Module):
 
         return ptr,logp
 
-    # def get_duplicate_mask(self,next_ptr_matrix,next_logp_matrix):
-    #     # 创建一个和 tensor 同样大小的布尔 tensor，初始值为 False
-    #     duplicates_mask = torch.zeros_like(next_ptr_matrix, dtype=torch.bool)
-    #     for i in range(next_ptr_matrix.size(0)):
-    #         row = next_ptr_matrix[i]
-    #         logprow=next_logp_matrix[i]
-    #         unique_elements, counts = torch.unique(row, return_counts=True)  # 统计每行元素的出现次数
-    #         duplicate_elements = unique_elements[counts > 1]  # 找到重复的元素 (出现次数大于 1)
-    #         for element in duplicate_elements:  # 对于每一种重复元素，标记为 True todo ……不对应该单独看每个数字
-    #             duplicates_mask[i] = (row == element)
-    #             log_max=torch.max(logprow[duplicates_mask[i]])
-    #             max_logp_car=(logprow==log_max) # todo  我服了训练初期是均匀分布。
-    #             duplicates_mask[i]=duplicates_mask[i] & (torch.logical_not(max_logp_car)) # 只有logp并非最大且重复元素需要True
-    #
-    #     return duplicates_mask
+
     def get_duplicate_mask(self,next_ptr_matrix, next_logp_matrix):
         # 创建一个和 tensor 同样大小的布尔 tensor，
         duplicates_mask = torch.zeros_like(next_ptr_matrix, dtype=torch.bool)
@@ -835,15 +815,6 @@ def update_mask_independent(num_depots, dynamic, n2n_distance, current_idx, car_
         # 将这些行中chosen_idx(当前位置即仓库位置？）对应位置的mask设为1
         new_mask[all_zero_indices, current_idx[all_zero_indices]] = 1
 
-    # # 检查是否有把当前位置的mask设置成1： # fixme:对应demands不为0就非常有问题了……为什么没更新啊兄弟！！！
-    # check_new_mask=new_mask[torch.arange(n2n_distance.size(0)), current_idx.squeeze(1)]
-    # if check_new_mask.any():
-    #     print("city mask 异常：", check_new_mask)
-    #     print(f"current idx:{current_idx.squeeze(1)}")
-    #     print(f"对应demands为：{demands[torch.arange(n2n_distance.size(0)), current_idx.squeeze(1)]}")
-    #     raise ValueError(f"城市的current idx 的mask为1:{check_new_mask}\n",)
-    # else:
-    #     print("city mask 正常：",check_new_mask)
     return new_mask.float()
 
 
@@ -871,8 +842,6 @@ def update_dynamic_independent(num_depots, max_car_load, dynamic, distance, next
     if visit.any():
         distance = n2n_distance[  #取对应batch的对应两点间的距离值（毕竟只要减去两个点之间的真实距离，无需考虑仓库距离。
             torch.arange(n2n_distance.size(0)), current_idx, next_idx.squeeze()].unsqueeze(1)
-        # fixme:疑惑1：为什么能连续带在仓库，因为已经结束了吗？疑惑2：为什么会出现demand =-1的情况？ 疑惑3：为什么会访问能力之外的点
-        #  疑惑4：难道访问的时候减去的demand到底是多少【-1】
         # 上一次选择的节点与这次选择的节点的差值
         check_load = load - demand - distance
         if (check_load < 0).any():
@@ -1687,14 +1656,14 @@ if __name__ == '__main__':
     parser.add_argument('--hidden', dest='hidden_size', default=128, type=int)
     parser.add_argument('--dropout', default=0.1, type=float)
     parser.add_argument('--layers', dest='num_layers', default=1, type=int)
-    parser.add_argument('--train-size', default=1000000, type=int)  #fixme!!!!!!!!!!!!
+    parser.add_argument('--train-size', default=100, type=int)  #fixme!!!!!!!!!!!!
     parser.add_argument('--valid-size', default=1000, type=int)
     parser.add_argument('--depot_num', default=5, type=int)  # todo ###############
 
     # 解析为args
     args = parser.parse_known_args()[0]  # colab环境跑使用
     # --------------------------------------------------------------------
-    args.test = False
+    args.test = True
     # --------------------------------------------------------------------
     # 设置checkpoint路径
     share = False       # todo 检查#############
