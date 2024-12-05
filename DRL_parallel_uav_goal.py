@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 # todo 此代码用于 优化目标为“一辆uav路径的长度”并且网络参数共享版本。
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "2" # todo 记得修改不同的gpu编号
+
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "3" # todo 记得修改不同的gpu编号
 import time
 import argparse
 import datetime
@@ -263,15 +265,15 @@ class DRL4TSP(nn.Module):
                 dynamic_hidden = self.dynamic_encoder(dynamic)  # 更新编码当前动态信息
                 decoder_hidden = self.decoder(decoder_input)  # 更新编码当前位置xy静态信息
 
+
                 # 指针网络。里面包含GRU。
                 probs, last_hh = self.pointer(self.static_hidden, dynamic_hidden, decoder_hidden,
                                               last_hh)  # 得到下一个点的（未mask）概率分布和隐状态。
+
                 probs_home[car_id] = probs
                 mask_home[car_id] = mask
-                probs = F.softmax(probs + mask.log(), dim=1)  # mask操作+softmax Softmax的原因：因为π(a,s)是必须大于0的，用softmax把0映射成很小的数字
 
-                # print(f"probs require greadient:{probs.requires_grad}")  # True
-                # print(f"probs is leaf :{probs.is_leaf}")  # False【is_leaf 属性只有在需要求导的时候才有意义。】
+                probs = F.softmax(probs + mask.log(), dim=1)  # mask操作+softmax Softmax的原因：因为π(a,s)是必须大于0的，用softmax把0映射成很小的数字
 
                 if self.training:
                     try:
@@ -285,7 +287,7 @@ class DRL4TSP(nn.Module):
                     while not torch.gather(mask, 1, ptr.data.unsqueeze(1)).byte().all():
                         ptr = m.sample()
 
-                    logp = m.log_prob(ptr) # 记录这个点的概率……# todo 注意！！是因为在这里用ptr获得了logp，所以后续直接修改ptr会报错。
+                    logp = m.log_prob(ptr) # 记录这个点的概率……# 是因为在这里用ptr获得了logp，所以后续直接修改ptr会报错。
                 else:
                     prob, ptr = torch.max(probs, 1)  # Greedy
                     logp = prob.log()  # B,1
@@ -322,12 +324,12 @@ class DRL4TSP(nn.Module):
                             new_ptr, new_logp = self.get_next_ptr_by_mask(row_logp,row_ptr, duplicates_mask, duplicate_car, mask_home, probs_home, batch_id,tour_idx)
                             row_ptr[duplicate_car]=new_ptr.clone()
                             row_logp[duplicate_car]=new_logp.clone()
-                            copy_tour=tem_next_ptr[duplicate_car].clone()
+                            copy_tour=tem_next_ptr[duplicate_car].clone() # todo 如果这个单独优化效果不行，就把parallel2拿过来！！！！
                             copy_tour[batch_id]=new_ptr # 应该好像是没问题的,ptr本身又不求导
                             tem_next_ptr[duplicate_car]=copy_tour
                             # # tem_next_ptr[duplicate_car][batch_id]=new_ptr # 就是这行赋值导致的出错
-                            tem_next_logp[duplicate_car][batch_id]=new_logp # todo 难道是这里导致了梯度清零吗
-                            # todo 明明对π网络的参数求导啊啊啊啊啊啊啊啊不就是对Pointer网络的参数求导吗为什么会这样啊啊啊啊
+                            tem_next_logp[duplicate_car][batch_id]=new_logp
+
                         if tem_count > 100:
                             print("row_ptr修改后：", row_ptr)
 
@@ -358,7 +360,7 @@ class DRL4TSP(nn.Module):
                     logp= tem_next_logp[car_id]
                     logp = logp * (1. - is_done)  # 如果完成了，logp 也是0, 梯度就不会更新了
 
-                    # fixme: 每个无人机的logp和ptr是单独存放，以便单独反向传播。
+                    # 每个无人机的logp和ptr是单独存放，以便单独反向传播。
                     #tour_logp.append(logp.unsqueeze(1))  # 每个时间t都要储存：因为为了计算整条路径出现的概率. T B 1
                     tour_logp[car_id].append(logp.unsqueeze(1)) # 为了把优化目标改为每个无人机的路径，需要添加维度
                     tour_idx[car_id].append(ptr.data.unsqueeze(1))  # T B 1 把当前无人机的新访问的点保存起来。
@@ -374,7 +376,6 @@ class DRL4TSP(nn.Module):
             # print("完成所有需求。")
             pass
 
-        # todo 修改======================================？？？
         # tour_idx 大小：最外层是list，包含num depot 个元素，每个元素是batch*无人机飞行过node个数。
         tour_idx = [torch.cat(tour_idx[i], dim=1) for i in range(self.depot_num)]  # 包含了每一辆无人机的轨迹【这个不用改】
         # tour_logp = torch.cat(tour_logp, dim=1)  # (batch_size, seq_len)
@@ -403,7 +404,7 @@ class DRL4TSP(nn.Module):
             raise ValueError(f"not mask.byte().any() in get_next_ptr()：{mask}")
 
         probs = F.softmax(probs + mask.log(), dim=0)
-        # probs = F.softmax(probs, dim=1) + mask.log() # fixme ？？？？？？？有没有更合理的？不知道如果使用这种会怎么样……
+        # probs = F.softmax(probs, dim=1) + mask.log() # todo？有没有更合理的？【使用原始prob的概率会如何？】
 
         if self.training:
 
@@ -416,7 +417,7 @@ class DRL4TSP(nn.Module):
             while not torch.gather(mask, 0, ptr.data.unsqueeze(0)).byte().all():
                 ptr = m.sample()
 
-            logp = m.log_prob(ptr)  # 记录这个点的概率……todo 还有一个不合理的地方是：这个去的logp不是旧的probs的logp……呃呃！
+            logp = m.log_prob(ptr)  # 记录这个点的概率……todo 还有一个不合理的地方是：这个去的logp不是旧的probs的logp……
 
         else:
             # prob, ptr = torch.max(probs, 1)  # Greedy
@@ -1078,7 +1079,8 @@ def validate(data_loader, actor, reward_fn, render_fn=None, save_dir='.',
 
         # 使用vrp奖励函数 reward_fn 计算预测的旅游索引的奖励。取奖励的均值，并使用 item() 提取标量值，添加到rewards列表中
         # reward = reward_fn(static, tour_indices).mean().item()
-        reward = reward_fn(static, tour_indices)  # 本batch的所有reward 列表 #
+        reward = reward_fn(static, tour_indices) # 已修改reward fn，现在大小为tensor(num_depot,B)
+        reward=reward.sum(0) # todo 已修改reward fn，新增了这行，方便下面代码实现保持一致。
         batch_reward_mean = reward.mean().item()  # 本batch的均值。
         # rewards.append(batch_reward_mean)
         rewards.extend(reward.tolist())
@@ -1139,44 +1141,40 @@ def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
             dynamic = dynamic.to(device)
             x0 = x0.to(device) if len(x0) > 0 else None
 
-            # todo:改为：1用每条无人机路径来训练同一个网络。OR：2每个无人机有自己的网络。【有点难改】
-            # todo 算是一个无人机，那下面那个reward的要改一下吗？【不可以改。因为使用倒过来是基于值的MC，r的绝对值都没法比较，改不了】
-
+            # todo:1用每条无人机路径来训练同一个网络。
             # Full forward pass through the dataset(使用actor的前向传播)
             tour_indices, tour_logp = actor(static, dynamic, x0)  # 调用的是forward函数。
 
-            reward = reward_fn(static, tour_indices) # reward(B,) todo修改了reward 函数！现在depot num * B
+            reward = reward_fn(static, tour_indices) # reward(B,) 修改了reward 函数！现在depot num * B
 
-            # todo新增：为了把优化目标改为独立的uav的路径长度，tour_logp：list[depot_num:tensor(T,B,)]
+            # 新增：为了把优化目标改为独立的uav的路径长度，tour_logp：list[depot_num:tensor(T,B,)]
             tour_logp_per_uav=[tour_logp[i].sum(dim=1) for i in range (depot_num)] # todo 是不是该用stack
 
             # Query the critic for an estimate of the reward(向评论家询问奖励的估计值)
-            critic_est = critic(static, dynamic).view(-1)  # (B,) # fixme？这能改吗？
-            critic_est_per_uav=critic_est / depot_num # todo test 使用critic/depot num!!!!!
+            critic_est = critic(static, dynamic).view(-1)  # (B,) # fixme？这能改吗？或许还有其他的critic的拟合对象可以实验？
+            critic_est_per_uav=critic_est / depot_num # todo test 暂时使用critic/depot num进行测试。
             advantage_per_uav=(reward-critic_est_per_uav).detach()
-
-            # # fixme：新增：对每辆无人机的路径进行训练。
+            actor_optim.zero_grad()
+            actor_losses=[]
+            # 新增：对每辆无人机的路径进行训练。
             for uav_id in range(depot_num):
-                print(f"uav{uav_id}")
-                # todo 修改创建critic的维度…【还是说使用critic/depot num？？】
                 # reward_per_uav=reward[uav_id]
                 # advantage=(reward_per_uav - critic_est_per_uav) # (B,)
                 advantage=advantage_per_uav[uav_id]
-                tour_logp=tour_logp_per_uav[uav_id]
-                actor_loss = torch.mean(
-                    advantage * tour_logp)  # tour_logp:(B，路程长度）.之所以要sum是为了求路径出现概率
-                actor_optim.zero_grad()
-                actor_loss.backward()
-                torch.nn.utils.clip_grad_norm_(actor.parameters(), max_grad_norm)
-                actor_optim.step() # todo 测试所有无人机的梯度都积累了之后才step。但是要注意裁剪。
+                tour_logp = tour_logp_per_uav[uav_id]
+                actor_loss = torch.mean(advantage * tour_logp)  # tour_logp:(B，路程长度）.之所以要sum是为了求路径出现概率
+                actor_loss.backward(retain_graph=True)
+                actor_losses.append(actor_loss.detach().item()) # 保存一下,用于绘图
 
+            torch.nn.utils.clip_grad_norm_(actor.parameters(), max_grad_norm)
+            actor_optim.step()
             # 真实奖励值和估计奖励值的差，作为优势函数(这里是A2C中的advantage)
             # advantage = (reward - critic_est) # (B,)
             # actor_loss是优势函数乘以演员的动作概率分布，这个乘积表示每个动作的优势加权的动作概率。然后取平均值作为演员的损失
             # actor_loss = torch.mean(advantage.detach() * tour_logp.sum(dim=1)) # tour_logp:(B，路程长度）.之所以要sum是为了求路径出现概率
             # critic_loss是根据优势函数的平方误差计算的
             advantage= (reward.sum(0) - critic_est) # todo 这样割裂两种advantage真的没关系吗
-            critic_loss = torch.mean(advantage ** 2) # todo ????????????
+            critic_loss = torch.mean(advantage ** 2)
             # 0梯度反向传播
             # actor_optim.zero_grad()
             # actor_loss.backward()
@@ -1190,9 +1188,11 @@ def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
             critic_optim.step()
             # 将奖励估计值，真实奖励值，actor损失平均求和后写入空列表中
             critic_rewards.append(torch.mean(critic_est.detach()).item())
-            # rewards.append(torch.mean(reward.detach()).item())# todo？reward_per_uav.sum(0)
+            # rewards.append(torch.mean(reward.detach()).item())# todo 已修改。
             rewards.append(torch.mean(reward.sum(0).detach()).item())
-            # losses.append(torch.mean(actor_loss.detach()).item())# todo？
+            actor_losses=sum(actor_loss)/len(actor_loss)
+            # losses.append(torch.mean(actor_losses.detach()).item())# todo 已修改。
+            losses.append(actor_losses)
 
             # 每100次输出
             if (batch_idx + 1) % 100 == 0:
@@ -1247,6 +1247,7 @@ def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
 
         mean_loss = np.mean(losses)
         mean_reward = np.mean(rewards)
+
         # Save the weights
         epoch_dir = os.path.join(checkpoint_dir, '%s' % epoch)  #./vrp_numnode_time//checkpoints/0
         if not os.path.exists(epoch_dir):
@@ -1264,6 +1265,7 @@ def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
         # 每一个epoch validate一次。
         mean_valid, _ = validate(valid_loader, actor, reward_fn, render_fn,
                                  valid_dir, num_plot=5, depot_number=depot_num)
+
         # Save best model parameters(保存最佳奖励) 是每个epoch检查!!!使用valid set的reward来选！！！
         if mean_valid < best_reward:  # reward 就是路程总长度。暂定无惩罚项(好像确实不需要额外的乘法）
             best_reward = mean_valid
@@ -1634,8 +1636,8 @@ if __name__ == '__main__':
     parser.add_argument('--hidden', dest='hidden_size', default=128, type=int)
     parser.add_argument('--dropout', default=0.1, type=float)
     parser.add_argument('--layers', dest='num_layers', default=1, type=int)
-    parser.add_argument('--train-size', default=10, type=int)  #fixme!!!!!!!!!!!!
-    parser.add_argument('--valid-size', default=10, type=int)
+    parser.add_argument('--train-size', default=1000000, type=int)  #fixme!!!!!!!!!!!!
+    parser.add_argument('--valid-size', default=1000, type=int)
     parser.add_argument('--depot_num', default=5, type=int)  # todo ###############
 
     # 解析为args
@@ -1653,12 +1655,11 @@ if __name__ == '__main__':
 
 
     print("---------这是同时决策版本 py---------")
-    #
     # todo 关于bug：
     #  注意last hh是否有问题、冲突解决的地方是否有错误。【是不是应该把没量无人机的last hh存起来？但是不解决冲突版本也没有这样】
     # todo ：其他改进方案：输入编码器的静态信息只能是本无人机的xy吗？能不能加入其他无人机的xy？【太复杂的话是不是还要把网络加深】
-    print("记得删掉torch.autograd.set_detect_anomaly(True)")
-    torch.autograd.set_detect_anomaly(True)
+    # print("记得删掉torch.autograd.set_detect_anomaly(True)")
+    # torch.autograd.set_detect_anomaly(True)
     import time
     # 开始计时
     start_time = time.time()
