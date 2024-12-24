@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
-# todo 优化目标为“一辆uav路径的长度”并且网络参数共享版本 + v2的同时决策
+# todo 优化目标为“一辆uav路径的长度”网络参数共享 + v2同时决策
 import os
+
 os.environ["CUDA_VISIBLE_DEVICES"] = "3" # todo 记得修改不同的gpu编号
 import time
 import argparse
@@ -1127,6 +1128,23 @@ def validate(data_loader, actor, reward_fn, render_fn=None, save_dir='.',
     # 返回平均奖励
     return np.mean(rewards), rewards
 
+def update_goal_weight(current_epo=0,uav_goal_epoch=0):
+    '''
+    uav_goal_epoch ："第uav_goal_epoch" epoch后uav goal的权重完全等于0.
+    '''
+
+    # # 指数级别：
+    # gamma=0.85
+    # new_alpha=1.*(gamma**current_epo)
+
+    # 二次函数公式
+    b = (uav_goal_epoch - 1) ** 4
+    new_alpha=max(-current_epo**4 / b + 1, 0)
+
+    print(f"current_epo={current_epo},alpha={new_alpha},uav_goal_epoch={uav_goal_epoch}")
+    return new_alpha
+
+
 
 def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
           render_fn, batch_size, actor_lr, critic_lr, max_grad_norm,
@@ -1154,11 +1172,11 @@ def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
 
     best_reward = np.inf  # 正无穷大
     all_epoch_loss, all_epoch_reward = [], []
-    alpha=1
-    gamma=0.85
-    print(f"alpha_0={alpha},gamma={gamma}")
+
+
     for epoch in range(20):  # 执行20轮训练 fixme!!!!!!!!能不能把这个写到外面。
-        print(f"alpha={alpha}")
+
+        alpha = update_goal_weight(current_epo=epoch, uav_goal_epoch=10)
 
         actor.train()
         critic.train()
@@ -1185,40 +1203,48 @@ def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
             del tour_indices
             torch.cuda.empty_cache()  # todo 修改了
 
-            # 新增：为了把优化目标改为独立的uav的路径长度，tour_logp：list[depot_num:tensor(T,B,)]
+            # 新增：为了把优化目标改为独立的uav的路径长度，tour_logp：list[depot_num:tensor(B,)]
             tour_logp=[tour_logp[i].sum(dim=1) for i in range (depot_num)] # todo 简化了这里
 
             # Query the critic for an estimate of the reward(向评论家询问奖励的估计值)
             critic_est = critic(static, dynamic).view(-1)  # (B,) # fixme？这能改吗？或许还有其他的critic的拟合对象可以实验？
             # critic_est_per_uav = critic_est / depot_num # todo test 暂时使用critic/depot num进行测试。
-            advantage_per_uav=(reward-critic_est / depot_num).detach() # todo 简化了这里
+            advantage_per_uav=(reward - critic_est / depot_num).detach() # todo 简化了这里
             actor_optim.zero_grad()
             actor_losses=[]
             # 新增：对每辆无人机的路径进行训练。
             for uav_id in range(depot_num):
                 # v1
-                # actor_loss = torch.mean(advantage_per_uav[uav_id] * tour_logp[uav_id])  # tour_logp:(B，路程长度）.之所以要sum是为了求路径出现概率
+                actor_loss = torch.mean(advantage_per_uav[uav_id] * tour_logp[uav_id])  # tour_logp:(B，路程长度）
 
-                # v2 0.5(ti-c/n)+0.5(T-C) # 草0.5根本没有太大意义
-                # actor_loss = torch.mean((0.5 * advantage_per_uav[uav_id] + 0.5 * (reward.sum(0) - critic_est).detach()) * tour_logp[
+                # v2 0.5(ti-c/n)+0.5(T-C) # 0.5根本没有太大意义
+                # actor_loss = torch.mean((0.7 * advantage_per_uav[uav_id] + 0.3 * (reward.sum(0) - critic_est).detach()) * tour_logp[
                 #     uav_id])  # tour_logp:(B，路程长度）.之所以要sum是为了求路径出现概率
+
 
                 # # V3  (ti-0+T-R) 虽然说失去了base，感觉可能好像更加不好了……。但是至少和路径平均值解除绑定。0.5可以删掉吗
                 # actor_loss = torch.mean((reward[uav_id]+(reward.sum(0) - critic_est).detach()) * tour_logp[
                 #     uav_id])
 
-                # V4 模拟退火
-                actor_loss= torch.mean((alpha * advantage_per_uav[uav_id]+(1.-alpha) * (reward.sum(0) - critic_est).detach()) * tour_logp[
-                    uav_id])
+                # # V4 模拟退火
+                # actor_loss= torch.mean((alpha * advantage_per_uav[uav_id]+(1.-alpha) * (reward.sum(0) - critic_est).detach()) * tour_logp[
+                #     uav_id])
 
-                if uav_id == depot_num - 1:
-                    actor_loss.backward()
-                else:
-                    actor_loss.backward(retain_graph=True)
+                # if uav_id == depot_num - 1:
+                #     actor_loss.backward()
+                # else:
+                #     actor_loss.backward(retain_graph=True)
+
+                actor_loss.backward(retain_graph=True)
                 actor_losses.append(actor_loss.item()) # todo 相比于楼上去掉了detach。
 
-            del tour_logp
             del advantage_per_uav
+
+            # # ADV V5=V1+下面这行，全局的A=T-C...sum(tour_logp)大小:(B,)
+            # actor_loss = torch.mean(((reward.sum(0) - critic_est).detach())* sum(tour_logp)) # todo 还没写这个actor_loss的记录。
+            # actor_loss.backward()
+
+            del tour_logp
             torch.cuda.empty_cache()  # todo 修改了
 
             torch.nn.utils.clip_grad_norm_(actor.parameters(), max_grad_norm)
@@ -1226,14 +1252,14 @@ def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
             actor_optim.zero_grad() # todo 添加了这个。
             # 真实奖励值和估计奖励值的差，作为优势函数(这里是A2C中的advantage)
             # critic_loss是根据优势函数的平方误差计算的
-            # advantage= (reward.sum(0) - critic_est) # todo 这样割裂两种advantage真的没关系吗
-            critic_loss = torch.mean((reward.sum(0) - critic_est) ** 2)# todo 简化了这里 【??????？ reward怎么没有detach！！！！！！！！！
+            # advantage= (reward.sum(0) - critic_est) #
+            critic_loss = torch.mean((reward.sum(0) - critic_est) ** 2)# todo 简化了这里
             critic_optim.zero_grad()
             critic_loss.backward()
             torch.nn.utils.clip_grad_norm_(critic.parameters(), max_grad_norm)
             critic_optim.step()
             # 将奖励估计值，真实奖励值，actor损失平均求和后写入空列表中
-            critic_rewards.append(torch.mean(critic_est.detach()).item())
+            #critic_rewards.append(torch.mean(critic_est.detach()).item())
             # rewards.append(torch.mean(reward.detach()).item())# todo 已修改。
             rewards.append(torch.mean(reward.sum(0).detach()).item())
             del reward
@@ -1254,7 +1280,7 @@ def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
                       (batch_idx, len(train_loader), mean_reward, mean_loss,
                        times[-1]))
 
-        alpha = alpha * gamma
+
 
 
         # ------------------当前epoch训练结束，接下来进行统计------------------------
@@ -1531,7 +1557,7 @@ def run_multi_alg_test(share_depot, args, algorithm):
     return  algorithm_result
 
 
-def test_generalization_uav_change(shared, run_alg_name):
+def test_generalization_uav_change(shared,run_alg_name):
     parser = argparse.ArgumentParser(description='Combinatorial Optimization')
     parser.add_argument('--seed', default=1234, type=int)
     parser.add_argument('--checkpoint', default=None)
@@ -1554,27 +1580,31 @@ def test_generalization_uav_change(shared, run_alg_name):
     args = parser.parse_known_args()[0]  # colab环境跑使用
 
     if shared:
-        args.checkpoint = os.path.join("trained_model", "total_shared_w200")
+        # args.checkpoint = os.path.join("trained_model", "total_shared_w200")
         # args.checkpoint = os.path.join("trained_model", "total_shared_w200_w250")
+        raise ValueError("……还没训练。")
     else:  # not share
-        args.checkpoint = os.path.join("trained_model", "trained_w200")
+        # args.checkpoint = os.path.join("trained_model", "trained_w200")
+        args.checkpoint = os.path.join("trained_model", "parallel_uav_goal_10w20epoch+finetunn")
     print("比较算法：",run_alg_name)
     reward_list_dict={}
 
-    uav_list=list(range(2, 4))
+    uav_list=list(range(2, 16))
     for uav_n in uav_list:
         args.depot_num=uav_n
         reward_dict = run_multi_alg_test(shared, args, algorithm=run_alg_name)
+
         for key,val in reward_dict.items():
             reward_list_dict.setdefault(key,[])
             reward_list_dict[key].append(np.mean(val))# 对每一个算法的reward集合计算平均值。
+            print(f"{key}:{reward_list_dict[key]}")
 
     plt.close('all')
     for alg in reward_list_dict.keys():
         plt.plot(uav_list, reward_list_dict[alg], label=f"{alg} average path")
     # plt.plot(uav_list, avg_R_Greedy, label="Greedy average path")
     plt.legend()
-    dir = os.path.join("generalization_test_picture")
+    dir = os.path.join("generalization_test_picture_Parallel")
     if not os.path.exists(dir):
         os.makedirs(dir)
     plt.savefig(os.path.join(dir, f"Greedy_VS_RL on {args.num_city} tower share={shared}.png"))
@@ -1610,32 +1640,37 @@ def test_generalization_tower_change(share,run_alg_name):
     parser.add_argument('--layers', dest='num_layers', default=1, type=int)
     parser.add_argument('--train-size', default=-1, type=int)
     parser.add_argument('--valid-size', default=1000, type=int)
-    parser.add_argument('--depot_num', default=20, type=int)
+    parser.add_argument('--depot_num', default=6, type=int)
     # 解析为args
     args = parser.parse_known_args()[0]  # colab环境跑使用
 
     args.test = True
     if share:
-        args.checkpoint = os.path.join("trained_model", "total_shared_w200")
+            raise ValueError("还没有训练好parrallel share呢……")
     else:  # not share
-        args.checkpoint = os.path.join("trained_model", "trained_w200")
+            args.checkpoint = os.path.join("trained_model", "parallel_uav_goal_10w20epoch+finetunn")
+
 
     # run_alg_name = ["Greedy", "RL"]
     print("比较算法：", run_alg_name)
     reward_list_dict = {}
 
-    tower_list = list(range(200, 301, 50))
+    tower_list = list(range(50, 301, 50))
     for tower_n in tower_list:
         args.num_city = tower_n
         # reward_rl, reward_greedy = run_exp(share, args)
         reward_dict= run_multi_alg_test(share, args, algorithm=run_alg_name)
+
         for key, val in reward_dict.items():
             reward_list_dict.setdefault(key, [])
             reward_list_dict[key].append(np.mean(val))  # 对每一个算法的reward集合计算平均值。
+            print(f"{key}:{reward_list_dict[key]}")
+
     for alg in reward_list_dict.keys():
         plt.plot(tower_list, reward_list_dict[alg], label=f"{alg} average path")
     plt.legend()
-    dir = os.path.join("generalization_test_picture")
+    dir = os.path.join("generalization_test_picture_Parallel")
+
     if not os.path.exists(dir):
         os.makedirs(dir)
     share=str(share)
@@ -1672,7 +1707,7 @@ if __name__ == '__main__':
     parser.add_argument('--hidden', dest='hidden_size', default=128, type=int)
     parser.add_argument('--dropout', default=0.1, type=float)
     parser.add_argument('--layers', dest='num_layers', default=1, type=int)
-    parser.add_argument('--train-size', default=10, type=int)  #fixme!!!!!!!!!!!!
+    parser.add_argument('--train-size', default=100, type=int)  #fixme!!!!!!!!!!!!
     parser.add_argument('--valid-size', default=10, type=int)
     parser.add_argument('--depot_num', default=3, type=int)  # todo ###############
 
@@ -1684,14 +1719,14 @@ if __name__ == '__main__':
     # 设置checkpoint路径
     share = False          # todo 检查#############
 
-    # if share:
-    #     # args.checkpoint = os.path.join("trained_model", "total_shared_w200")
-    #     args.checkpoint="?????????"
-    # else:
-    #     args.checkpoint = os.path.join("trained_model", "parallel_uav_goal_10w20epoch")
+    if share:
+        # args.checkpoint = os.path.join("trained_model", "total_shared_w200")
+        args.checkpoint="?????????"
+    else:
+        args.checkpoint = os.path.join("trained_model", "parallel_uav_goal_10w20epoch")
+        args.checkpoint = os.path.join("../", "trained_model", "parallel_uav_goal_10w20epoch")
 
     print("---------这是同时决策版本 py---------")
-    #  【是不是应该把没量无人机的last hh存起来？但是不解决冲突版本也没有这样】
     # todo ：其他改进方案：输入编码器的静态信息只能是本无人机的xy吗？能不能加入其他无人机的xy？【太复杂的话是不是还要把网络加深】
 
     import time
@@ -1701,7 +1736,9 @@ if __name__ == '__main__':
     mean_rl = np.mean(reward_rl)
     print('DRL:Average tour length in test set: ', mean_rl)
     #--------------------------------------------------------------
-    # test_generalization_uav_change(shared=share, run_alg_name=["RL","Greedy"])
+    # fixme 警告：这个文件只能跑Parallel 的泛化性测试
+    # print("警告：这个文件只能跑Parallel 的泛化性测试\n"*3)
+    # test_generalization_uav_change(shared=share,  run_alg_name=["RL","Greedy"])
     # test_generalization_tower_change(share=share,run_alg_name=["Greedy","RL"])
     # 结束计时
     end_time = time.time()
