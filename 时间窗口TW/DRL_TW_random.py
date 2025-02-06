@@ -163,7 +163,7 @@ class DRL4TSP(nn.Module):
 
     def __init__(self, static_size, dynamic_size, hidden_size, car_load, depot_num,
                  update_fn=None, mask_fn=None, node_distance_fn=None, num_layers=1,
-                 dropout=0.):  ##########################################################
+                 dropout=0.,est_upper=1.1,est_lower=0.9):
         super(DRL4TSP, self).__init__()
 
         if dynamic_size < 1:
@@ -183,6 +183,8 @@ class DRL4TSP(nn.Module):
         self.car_load = car_load
         self.depot_num = depot_num
 
+        self.est_upper = est_upper
+        self.est_lower = est_lower
         for p in self.parameters():  # 对参数进行初始化。
             if len(p.shape) > 1:
                 nn.init.xavier_uniform_(p)
@@ -271,7 +273,7 @@ class DRL4TSP(nn.Module):
                 # 根据当前无人机结束新的访问，结合下一台无人机的。注意这个ptr和dynamic需要是新的,因为需要根据下一个无人机的当前位置，判断下一个点不能去哪。
                 # mask = self.mask_fn(self.depot_num, dynamic, distance, ptr.data, car_id).detach()
                 # ----------TW start--------------
-                mask_tw = self.mask_fn(self.depot_num, dynamic, distance, ptr_tw.data, car_id_tw).detach()
+                mask_tw = self.mask_fn(self.depot_num, dynamic, distance, ptr_tw.data, car_id_tw,self.est_upper).detach()
                 # todo 已修改。使用的mask fn是后缀TW的update mask
                 # ----------TW end--------------
             if debug_gpu:
@@ -363,7 +365,7 @@ class DRL4TSP(nn.Module):
                 # 更新动态信息，传递最后一个访问的点
                 #  # B 2 L 这里还是【当前小车】的load和当前小车的新一步action，更新地图里的load和demand
                 dynamic, next_dis = self.update_fn(self.depot_num, self.car_load, dynamic, distance, action.data,
-                                         ptr_tw)
+                                         ptr_tw,self.est_upper,self.est_lower)
 
                 if debug_gpu:
                     torch.cuda.empty_cache()  # 使用memory_allocated前先清空一下cache
@@ -686,7 +688,7 @@ def node_distance_shared(static, num_depots):
 #
 #     return new_mask.float()
 
-def update_mask_shared_TW(num_depots, dynamic, distance, current_idx, car_id):
+def update_mask_shared_TW(num_depots, dynamic, distance, current_idx, car_id,est_upper):
     """更新用于隐藏非有效状态的掩码。用于【共享仓库】的功能
 
     参数
@@ -701,7 +703,7 @@ def update_mask_shared_TW(num_depots, dynamic, distance, current_idx, car_id):
     loads = dynamic.data[:, 0]  # (batch_size, seq_len)
     demands = dynamic.data[:, 1]  # (batch_size, seq_len)
     n2n2depot_dis = distance + distance[:, -1, :].unsqueeze(1)  # 节点之间的距离加上与最近仓库的距离。
-    n2n2depot_dis = n2n2depot_dis[:, :-1, :]  # 第二维度的意思：前面的值是节点之间的距离加上与最近仓库的距离。
+    n2n2depot_dis = est_upper * n2n2depot_dis[:, :-1, :]  # 第二维度的意思：前面的值是节点之间的距离加上与最近仓库的距离。
 
     # 计算 current_idx 到仓库点的距离【注意：共享仓库】
     # depot_distances = distance[torch.arange(distance.size(0)), current_idx.squeeze(1), :num_depots]
@@ -766,7 +768,7 @@ def update_mask_shared_TW(num_depots, dynamic, distance, current_idx, car_id):
 
     return new_mask.float()
 
-def update_dynamic_shared(num_depots, max_car_load, dynamic, distance, next_idx, current_idx):  # 加了参数：访问的前一个点。
+def update_dynamic_shared(num_depots, max_car_load, dynamic, distance, next_idx, current_idx,upper,lower):  # 加了参数：访问的前一个点。
     """
     用于更新当前地图的dynamic的函数。啊要用到distance是因为dynamic里面的load需要减去距离……
     这个函数是【共享仓库】版本
@@ -787,9 +789,12 @@ def update_dynamic_shared(num_depots, max_car_load, dynamic, distance, next_idx,
     all_demands = dynamic[:, 1].clone()
     load = torch.gather(all_loads, 1, next_idx.unsqueeze(1))  # 获得batch里每一个样本，下一个节点的load
     demand = torch.gather(all_demands, 1, next_idx.unsqueeze(1))  # 获得batch里每一个样本，下一个节点的demand
-    distance_matrix = distance[:, :-1, :]  # 距离矩阵 取到-1是因为最后一个是“每个点到最远的仓库的距离
+    distance_matrix = distance[:, :-1, :]  # 距离矩阵 取到-1是因为最后一个是“每个点到最远的仓库的距离,是updatem mask用的这里用不上
     diff_distances = distance_matrix[
         torch.arange(distance_matrix.size(0)), current_idx, next_idx.squeeze()].unsqueeze(1)
+
+    random_factor= (upper-lower)*torch.rand_like(diff_distances)+lower
+    diff_distances=diff_distances * random_factor
 
     # 在小批量中 - 如果我们选择访问一个城市，尽可能满足其需求量
     if visit.any():
@@ -952,7 +957,7 @@ def node_distance_independent(static, num_depots):
 #
 #     return new_mask.float()
 
-def update_mask_independent_TW(num_depots, dynamic, n2n_distance, current_idx, car_id):
+def update_mask_independent_TW(num_depots, dynamic, n2n_distance, current_idx, car_id,est_upper):
     """和上一个相比是只允许无人机返回自己的仓库。
 
     dynamic: torch.autograd.Variable 的大小为 (1, num_feats, seq_len)
@@ -977,7 +982,7 @@ def update_mask_independent_TW(num_depots, dynamic, n2n_distance, current_idx, c
 
     dis_depot2all=torch.stack(dis_depot2all2,dim=0) #tensor B,num_node
 
-    dis_cur2node2depot = dis_cur2all + dis_depot2all  # D(当前点~所有点) +D(自己仓库~所有点) 总距离
+    dis_cur2node2depot = est_upper*(dis_cur2all + dis_depot2all)  # D(当前点~所有点) +D(自己仓库~所有点) 总距离
 
     # 如果没有剩余的正需求量，我们可以结束行程。
     if demands.eq(0).all():  # 即所有batch的里面，地图里面每一个点都没有需求了：
@@ -1036,7 +1041,7 @@ def update_mask_independent_TW(num_depots, dynamic, n2n_distance, current_idx, c
     return new_mask.float()
 
 
-def update_dynamic_independent(num_depots, max_car_load, dynamic, n2n_distance, next_idx, current_idx):  # 加了参数：访问的前一个点。
+def update_dynamic_independent(num_depots, max_car_load, dynamic, n2n_distance, next_idx, current_idx,upper,lower):  # 加了参数：访问的前一个点。
 
     """
     这是用于更新当前地图的dynamic的函数。此函数用于【非共享仓库】。
@@ -1059,10 +1064,13 @@ def update_dynamic_independent(num_depots, max_car_load, dynamic, n2n_distance, 
     distance = n2n_distance[  # 取对应batch的对应两点间的距离值（毕竟只要减去两个点之间的真实距离，无需考虑仓库距离。
         torch.arange(n2n_distance.size(0)), current_idx, next_idx.squeeze()].unsqueeze(1)
 
+    random_factor = (upper - lower) * torch.rand_like(distance) + lower
+    distance=distance * random_factor
+
     # 在batch中 - 如果我们下一个点选择访问一个城市：
     if visit.any():
         # 上一次选择的节点与这次选择的节点的差值
-        check_load = load - demand - distance
+        check_load = load - demand - distance # todo 给demand
         if (check_load < 0).any():
             print(check_load)
             raise ValueError("Error: 存在负载为负数.")
@@ -1070,7 +1078,7 @@ def update_dynamic_independent(num_depots, max_car_load, dynamic, n2n_distance, 
         new_load = torch.clamp(check_load, min=0)  # 当前负载-下一个点需求-路程损耗
         del check_load # todo 新增解决OOM
 
-        check_demand = demand - load+distance # 下一个点需求减去车辆走路后的负载。
+        check_demand = demand - load + distance # 下一个点需求减去车辆走路后的负载。
         if (check_demand>0).any():
             raise ValueError("Error:无法满足下一个城市的需求。") # 注意只有需求无法分割的时候，这个报错才是必要的
         new_demand = torch.clamp(check_demand, min=0)
@@ -1381,7 +1389,7 @@ def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
     now = datetime.datetime.now()
     format_now = '%s' % now.month + "_" + '%s' % now.day + "_" + '%s' % now.hour + "_" + '%s' % now.minute + "_" + '%s' % now.second
 
-    save_dir = os.path.join(current_dir, "TW_train_log_share_LRup", '%d' % num_city, format_now)  # ./vrp/numnode/time
+    save_dir = os.path.join(current_dir, "TW_random_train_log_LRup", '%d' % num_city, format_now)  # ./vrp/numnode/time
     # 创建能够保存训练中checkpoint的文件夹
     checkpoint_dir = os.path.join(save_dir, 'train_checkpoints')  # /vrp/numnode/time/checkpoints
     if not os.path.exists(checkpoint_dir):
@@ -1889,7 +1897,7 @@ if __name__ == '__main__':
     parser.add_argument('--checkpoint', default=None)
     parser.add_argument('--test', action='store_true', default=False)
     parser.add_argument('--task', default='vrp')
-    parser.add_argument('--nodes', dest='num_city', default=200, type=int)  #todo 对齐#########
+    parser.add_argument('--nodes', dest='num_city', default=50, type=int)  #todo 对齐#########
     # parser.add_argument('--actor_lr', default=5e-4, type=float)
     # parser.add_argument('--critic_lr', default=5e-4, type=float)
     parser.add_argument('--actor_lr', default=1e-3, type=float)  # 学习率，现在在训练第4epoch，我手动改了一下
@@ -1900,9 +1908,9 @@ if __name__ == '__main__':
     parser.add_argument('--hidden', dest='hidden_size', default=128, type=int)
     parser.add_argument('--dropout', default=0.1, type=float)
     parser.add_argument('--layers', dest='num_layers', default=1, type=int)
-    parser.add_argument('--train-size', default=100000, type=int)  #fixme!!!!!!!!!!!!
-    parser.add_argument('--valid-size', default=1000, type=int)
-    parser.add_argument('--depot_num', default=20, type=int)  # todo ###############
+    parser.add_argument('--train-size', default=1000, type=int)  #fixme!!!!!!!!!!!!
+    parser.add_argument('--valid-size', default=100, type=int)
+    parser.add_argument('--depot_num', default=5, type=int)  # todo ###############
 
     # 解析为args
     args = parser.parse_known_args()[0]  # colab环境跑使用
@@ -1912,14 +1920,12 @@ if __name__ == '__main__':
     # 设置checkpoint路径
     share = False          # todo 检查#############
 
-    if share:
-        # args.checkpoint = os.path.join("../","TW","TW_train_log_share_LRup","50","2_5_20_12_28")
-        args.checkpoint ="?"
-    else:
-        args.checkpoint = os.path.join("../","TW","TW_train_log_LRup","50","2_5_18_46_16")
+    # if share:
+    #     # args.checkpoint = os.path.join("../","TW","TW_train_log_share_LRup","50","2_5_20_12_28")
+    #     args.checkpoint ="?"
+    # else:
+    #     args.checkpoint = os.path.join("../","TW","TW_train_log_LRup","50","2_5_18_46_16")
 
-    # todo 【时间窗】：现在无人机时间没有按照顺序来。（若巡检时间固定，在本塔巡检完之后，锁定下一个，飞过去，计算飞过去的时间，排决策顺序）
-    # todo:  抢夺决策？？？怎么写实现：1，获取所有无人机下一步的距离（已经确定可行）然后按照距离执行（？会重复吧喂）
 
     reward_rl=run_RL_exp(share, args) # todo 注意update mask 在run multi test 里面还没有改函数引用。
     mean_rl = np.mean(reward_rl)
