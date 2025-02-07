@@ -246,10 +246,12 @@ def DRL4VRP_Problem(tower_num, uav_num, position,share):
     def run():
         uav_set = [UAV(depot_pos=position[i],init_id=i) for i in range(uav_num)]
 
-        uav_index = 0
+        # uav_index = 0
+        uav_order=[(i,0) for i in range(uav_num)] # (uav_id, task_time)
         # 开始循环每个无人机
         while not all(visited_tower) or any(empty_depot):  # 如果还有电塔没有访问、是否所有无人机都在仓库
-            uav_index %= uav_num
+            # uav_index %= uav_num
+            uav_index=uav_order[0][0]
             uav = uav_set[uav_index]
             # 计算最近的点的下标和距离
             if share:
@@ -261,51 +263,58 @@ def DRL4VRP_Problem(tower_num, uav_num, position,share):
 
             if in_depot: # fix√ # 如果在仓库。（这个是留给以后扩展成可以连续访问仓库用的）
                 if 1.1*(dis_go + dis_to_depot + demand) > uav.energy:  # 电量不够 # fix :考虑电塔demand
-                    if dis_go != math.inf and dis_to_depot != math.inf:
-                        # Note：如果两个都是inf，说明城市都访问过，只等着飞回来。
+                    if dis_go != math.inf:
                         print(f"Note: 最近的tower是{dis_go} 回仓库是{dis_to_depot}，" 
-                              f"大于满格能量：{uav.energy}。uav留在原地")
+                              f"需求加来回路程>满格能量：{uav.energy}。uav留在原地")
+                    else:
+                        # Note：距离是inf，说明所有城市都访问过了。需要等其他无人机完成任务飞回来。
+                        # print("似乎所有任务都完成了。只需要等着")
+                        pass
+                    uav_order.pop(0)
+                    uav_order.append((uav_index, math.inf))
+                        # todo---------------------合并这两个情况。。。。。。。。。。。。。。。。
                 else:  # 如果能量足够：过去那个tower。并且标记已访问。消耗能量
                     empty_depot[uav.current_node_id]=True # fix 新增√
                     uav.track.append(tower_position[near_tower_index]) #等等这是tower里面的id！！
                     uav.current_node_id= near_tower_index + uav_num # fixme 偏移量√
-                    uav.energy -=  (dis_go+demand)*(0.9+np.random.rand()*(1.1-0.9)) # fix:考虑电塔demand。
+                    cost=(dis_go+demand)*(0.9+np.random.rand()*(1.1-0.9))# fix:考虑电塔demand。
+                    uav.energy -=  cost
+                    uav_order.append((uav_index,uav_order.pop(0)[1]+cost)) # 添加任务时间排序
                     tower_demand[near_tower_index] = 0 # 更新demand
                     visited_tower[near_tower_index] = True
                     # print(f"uav{uav_index} visited tower{near_tower_index}:{uav.track[-1]}.remaining energy:{uav.energy}")
             else:  # 不在仓库
-                if  1.1*(dis_go + dis_to_depot + demand) > uav.energy:  # 电量不够 回到自己的仓库 # fix :考虑电塔demand
-                    if share:
-                        depot_id, back_depot_energy = uav.get_nearest_depot_id()  # 共享：找到最近的【空】仓库
-                    else:
-                        depot_id=uav.depot_id # 非共享：直接返回自己的仓库
+                if  1.1*(dis_go + dis_to_depot + demand) > uav.energy:  # 电量不够 回到自己的仓库
+                    if share: ## 共享：找到最近的【空】仓库
+                        depot_id, back_depot_energy = uav.get_nearest_depot_id()
+                    else: # 非共享：直接返回自己的仓库
+                        depot_id=uav.depot_id
                         back_depot_energy=n2n_distance[depot_id,uav.current_node_id]
 
                     if not empty_depot[depot_id]: #检查是否为空
                         raise ValueError(f"试图访问非空的充电桩{uav.current_node_id }")
-                    if uav.energy<back_depot_energy: # 检查电是否足够
-                        raise ValueError(f"uav {uav_index} has energy {uav.energy} "
-                                         f"but go back to depot need {back_depot_energy}")
 
-                    uav.energy -= back_depot_energy*(0.9+np.random.rand()*(1.1-0.9))
+                    cost = back_depot_energy*(0.9+np.random.rand()*(1.1-0.9))
+                    uav.energy -= cost
                     if uav.energy<0:
                         raise ValueError("还没回到充电桩就没电了，，")
                     uav.track.append(position[depot_id]) # 被选择的充电桩坐标
                     uav.current_node_id = depot_id  # 更新为成被选择的充电桩
                     empty_depot[depot_id] = False  # fix√新增
                     uav.energy = max_energy
-                    # print(f"uav{uav_index} charged to max energy:{uav.energy}.")
+                    uav_order.append((uav_index, uav_order.pop(0)[1] + cost+0.1*(0.9+np.random.rand()*(1.1-0.9))))  # 添加任务时间排序
                 else:  # 如果能量足够：过去下一个tower。并且标记已访问。消耗能量
                     uav.track.append(tower_position[near_tower_index])
                     uav.current_node_id=near_tower_index+uav_num # fixme √+偏移量，转换成node id
-                    uav.energy -= (dis_go+demand)*(0.9+np.random.rand()*(1.1-0.9)) # fix: 减去电塔demand
+                    cost= (dis_go+demand)*(0.9+np.random.rand()*(1.1-0.9)) # fix: 减去电塔demand
+                    uav.energy -= cost
                     tower_demand[near_tower_index]=0 # 更新demand
                     visited_tower[near_tower_index] = True
-                    # print(f"uav{uav_index} visited tower{near_tower_index}:{uav.track[-1]}.remaining energy:{uav.energy}")
+                    uav_order.append((uav_index, uav_order.pop(0)[1] + cost))  # 添加任务时间排序
             if uav.energy<0:
                 raise ValueError("uav energy < 0")
-            # print(f"tower demand: {tower_demand}")
-            uav_index += 1
+            # uav_index += 1
+            uav_order.sort(key=lambda x: x[1])
 
         if (tower_demand>0).any():
             raise ValueError("The uav haven't visited all the tower!!!")
@@ -326,7 +335,7 @@ def DRL4VRP_Problem(tower_num, uav_num, position,share):
 
         # print(f"total distance:{total_dis}")
 
-        # plot_track(all_track,"GIF") # 画出本地图的动态图。 # todo ……要怎么给RL和GD来对齐画图呢。
+        # plot_track(all_track,"Greedy_GIF") # 画出本地图的动态图。 # todo ……要怎么给RL和GD来对齐画图呢。
 
         return total_dis
 
