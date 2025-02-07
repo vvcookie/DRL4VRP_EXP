@@ -19,7 +19,6 @@ def DRL4VRP_Problem(tower_num, uav_num, position,share):
 
     visited_tower = [False] * tower_num  # 标记是否访问过。todo  以后如果demand不同，可以用visited来存放demand的值。
     empty_depot=[False] * uav_num # 充电桩是否为空。初始为满。离开和访问的时候更新
-    # tower_position_mask = np.array(tower_position, dtype=float) # 直接使用visited_tower进行计算 。此全局变量废除。
     tower_demand = np.full(tower_num,tower_need)
 
     # 新增：N2N dis：包括电塔和仓库在内的所有点之间的两点距离
@@ -178,18 +177,10 @@ def DRL4VRP_Problem(tower_num, uav_num, position,share):
             """
 
             mask = -np.log10(np.array(1) - visited_tower)[:, np.newaxis]  # 通过visited 01计算mask
-            # tower_position_mask = mask + tower_position  # mask加到postion上 todo ……mask 不应该加到距离上吗……怎么加到positon上了
 
-            # current_pos = np.array(self.track[-1])
-            # dis_list_go = cal_distance_list(current_pos - np.array(tower_position_mask))# 当前点-所有tower
             dis_list_go = n2n_distance[self.current_node_id, uav_num:] + mask.squeeze()
-            # if not all(dis_list_go_test==dis_list_go):
-            #     raise  ValueError("dis_list_go_test!=dis_list_go")
-
-            # dis_list_back = cal_distance_list(position[self.depot_id] - np.array(tower_position_mask))
             dis_list_back = n2n_distance[self.depot_id, uav_num:] + mask.squeeze()
-            # if not all(dis_list_back==dis_list_back_test):
-            #     raise  ValueError("dis_list_back==dis_list_back_test")
+
             #dis_total = dis_list_go + dis_list_back + tower_demand  # fix:考虑电塔demand
 
             # 20250206修改:不考虑电塔demand
@@ -228,14 +219,8 @@ def DRL4VRP_Problem(tower_num, uav_num, position,share):
                 return tower2depot_max_dis
 
             mask= -np.log10(np.array(1)-visited_tower)[:, np.newaxis] # 通过visited 0和1计算mask,变成inf 和 0
-            tower_position_mask = mask + tower_position # mask加到postion上，确保未访问过。
-
-            current_pos = np.array(self.track[-1])
-            # dis_list_go = cal_distance_list(current_pos - np.array(tower_position_mask))# 当前点-所有tower
 
             dis_list_go_test= n2n_distance[self.current_node_id, uav_num:] + mask.squeeze()
-            # if not all(dis_list_go_test==dis_list_go): # 测试是否一样
-            #     raise  ValueError("dis_list_go_test!=dis_list_go")
             dis_list_back = get_farthest_depot_dis() # D 所有tower~其最远仓库的距离（这里不考虑仓库是否为空！RL也不考虑。能去最远的肯定能去其他的。）
             # dis_total = dis_list_go_test + dis_list_back + tower_demand # D当前点~所有tower + D 所有tower~其最远仓库的距离 +demand
             nearest_index = np.argmin(dis_list_go_test) # fixme注意这是tower id 不是node id  20250206 修改为只考虑去电塔距离最近
@@ -262,34 +247,37 @@ def DRL4VRP_Problem(tower_num, uav_num, position,share):
                 in_depot = uav.is_in_depot()
 
             if in_depot: # fix√ # 如果在仓库。（这个是留给以后扩展成可以连续访问仓库用的）
-                if 1.1*(dis_go + dis_to_depot + demand) > uav.energy:  # 电量不够 # fix :考虑电塔demand
-                    if dis_go != math.inf:
-                        print(f"Note: 最近的tower是{dis_go} 回仓库是{dis_to_depot}，" 
-                              f"需求加来回路程>满格能量：{uav.energy}。uav留在原地")
-                    else:
+                if 1.1*(dis_go + dis_to_depot + demand) > uav.energy:  # 电量不够：自己的任务已经完成了
+                    #if dis_go != math.inf:
+                        # print(f"Note: 最近的tower是{dis_go} 回仓库是{dis_to_depot}，"
+                        #       f"需求加来回路程>满格能量：{uav.energy}。uav留在原地")
+                    #else:
                         # Note：距离是inf，说明所有城市都访问过了。需要等其他无人机完成任务飞回来。
                         # print("似乎所有任务都完成了。只需要等着")
-                        pass
+                        # pass
+
+                    # print(f"Note:{uav.energy}。uav留在原地")
                     uav_order.pop(0)
                     uav_order.append((uav_index, math.inf))
                         # todo---------------------合并这两个情况。。。。。。。。。。。。。。。。
                 else:  # 如果能量足够：过去那个tower。并且标记已访问。消耗能量
-                    empty_depot[uav.current_node_id]=True # fix 新增√
-                    uav.track.append(tower_position[near_tower_index]) #等等这是tower里面的id！！
-                    uav.current_node_id= near_tower_index + uav_num # fixme 偏移量√
+                    empty_depot[uav.current_node_id]=True #
+                    uav.track.append(tower_position[near_tower_index]) #这是tower里面的id！！
+                    tower_demand[near_tower_index] = 0  # 更新demand
+                    visited_tower[near_tower_index] = True
+                    uav.current_node_id= near_tower_index + uav_num # 切换当前位置
+
                     cost=(dis_go+demand)*(0.9+np.random.rand()*(1.1-0.9))# fix:考虑电塔demand。
                     uav.energy -=  cost
                     uav_order.append((uav_index,uav_order.pop(0)[1]+cost)) # 添加任务时间排序
-                    tower_demand[near_tower_index] = 0 # 更新demand
-                    visited_tower[near_tower_index] = True
-                    # print(f"uav{uav_index} visited tower{near_tower_index}:{uav.track[-1]}.remaining energy:{uav.energy}")
+
             else:  # 不在仓库
                 if  1.1*(dis_go + dis_to_depot + demand) > uav.energy:  # 电量不够 回到自己的仓库
                     if share: ## 共享：找到最近的【空】仓库
                         depot_id, back_depot_energy = uav.get_nearest_depot_id()
                     else: # 非共享：直接返回自己的仓库
                         depot_id=uav.depot_id
-                        back_depot_energy=n2n_distance[depot_id,uav.current_node_id]
+                        back_depot_energy = n2n_distance[depot_id,uav.current_node_id]
 
                     if not empty_depot[depot_id]: #检查是否为空
                         raise ValueError(f"试图访问非空的充电桩{uav.current_node_id }")
@@ -300,16 +288,16 @@ def DRL4VRP_Problem(tower_num, uav_num, position,share):
                         raise ValueError("还没回到充电桩就没电了，，")
                     uav.track.append(position[depot_id]) # 被选择的充电桩坐标
                     uav.current_node_id = depot_id  # 更新为成被选择的充电桩
-                    empty_depot[depot_id] = False  # fix√新增
+                    empty_depot[depot_id] = False
                     uav.energy = max_energy
                     uav_order.append((uav_index, uav_order.pop(0)[1] + cost+0.1*(0.9+np.random.rand()*(1.1-0.9))))  # 添加任务时间排序
                 else:  # 如果能量足够：过去下一个tower。并且标记已访问。消耗能量
                     uav.track.append(tower_position[near_tower_index])
-                    uav.current_node_id=near_tower_index+uav_num # fixme √+偏移量，转换成node id
-                    cost= (dis_go+demand)*(0.9+np.random.rand()*(1.1-0.9)) # fix: 减去电塔demand
-                    uav.energy -= cost
+                    uav.current_node_id=near_tower_index+uav_num # 转换成node id
                     tower_demand[near_tower_index]=0 # 更新demand
                     visited_tower[near_tower_index] = True
+                    cost = (dis_go + demand) * (0.9 + np.random.rand() * (1.1 - 0.9))  # fix: 减去电塔demand
+                    uav.energy -= cost
                     uav_order.append((uav_index, uav_order.pop(0)[1] + cost))  # 添加任务时间排序
             if uav.energy<0:
                 raise ValueError("uav energy < 0")
@@ -324,18 +312,14 @@ def DRL4VRP_Problem(tower_num, uav_num, position,share):
         all_track = [] # 不是兄弟你记录这个干什么
         for u in range(uav_num):
             uav = uav_set[u]
-            # uav.track.append(uav.depot_pos)  # 手动添加回仓库的点。… fix√去掉了这个。已经改while的停止条件了，不用加了
             if uav.current_node_id>= uav_num:
                 raise ValueError(f"track uav{u} final position:{uav.current_node_id} is not depot")
-            # uav.print_track()
             all_track.append(uav.track) #
             dis = uav.get_total_dis()
             total_dis += dis # 记录总距离。
-            # print(f"distance:{dis}")
 
-        # print(f"total distance:{total_dis}")
 
-        # plot_track(all_track,"Greedy_GIF") # 画出本地图的动态图。 # todo ……要怎么给RL和GD来对齐画图呢。
+        # plot_track(all_track,"Greedy_GIF") # 画出本地图的动态图。
 
         return total_dis
 
@@ -402,8 +386,8 @@ def draw_uav_change(share):
 
 if __name__ == "__main__":
     run_times=1000
-    tower_n=200
-    uav_n=20
+    tower_n=50
+    uav_n=5
     # share_depot=False
     np.random.seed(111) #方便debug。
     position_set = np.random.random(size=(run_times, 2, tower_n + uav_n)) # 共用地图。
