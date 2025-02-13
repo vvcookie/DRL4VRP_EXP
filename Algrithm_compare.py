@@ -1,11 +1,19 @@
 import os
+
+
+
 os.environ["CUDA_VISIBLE_DEVICES"] = "2" # todo 记得修改不同的gpu编号
 import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 # -------------------------------------------------------
-from 时间窗口TW.DRL_TW_random_constrain_home_share import *
+from 时间窗口TW.DRL_TW_random import run_RL_exp
+from 时间窗口TW.DRL_TW_random_Over_Est  import run_RL_exp as run_RL_overest
+from 时间窗口TW.DRL_TW_random import VehicleRoutingDataset
+
 from 时间窗口TW.Greedy_VRP_TW_random import run_greedy_VRP
+from 时间窗口TW.Greedy_over_est import run_greedy_VRP as run_greedy_overestimate
+
 
 def test_generalization_uav_change(upper,lower,shared, run_alg_name,_save_dir):
     parser = argparse.ArgumentParser(description='Combinatorial Optimization')
@@ -24,20 +32,21 @@ def test_generalization_uav_change(upper,lower,shared, run_alg_name,_save_dir):
     parser.add_argument('--dropout', default=0.1, type=float)
     parser.add_argument('--layers', dest='num_layers', default=1, type=int)
     parser.add_argument('--train-size', default=-1, type=int)
-    parser.add_argument('--valid-size', default=10, type=int)
+    parser.add_argument('--valid-size', default=100, type=int)
     parser.add_argument('--depot_num', default=-1, type=int)
     # 解析为args
     args = parser.parse_known_args()[0]  # colab环境跑使用
 
+
     if share:
-        args.checkpoint = os.path.join("TW_random_Cons_train_log_share","50","2_11_0_21_59")
+        args.checkpoint = os.path.join("时间窗口TW","TW_random_train_log_share","200(tem)")
     else:
-        args.checkpoint=os.path.join("TW_random_Cons_train_log","50","2_11_0_20_17")
+        args.checkpoint = os.path.join("时间窗口TW","TW_random_train_log","200(tem)")
 
     print("比较算法：",run_alg_name)
     reward_list_dict={}
 
-    uav_list=list(range(3, 10))
+    uav_list=list(range(4, 10))
     for uav_n in uav_list:
         args.depot_num=uav_n
         reward_dict = run_multi_alg_test(upper,lower,shared, args, algorithm=run_alg_name)
@@ -53,11 +62,12 @@ def test_generalization_uav_change(upper,lower,shared, run_alg_name,_save_dir):
     plt.xlabel('Num of UAV')
     plt.ylabel('Total distance')
     plt.legend()
-    plt.title(f"Greedy_VS_RL on {args.num_city} tower (share={shared})")
+    alg_vs_name=" VS ".join(run_alg_name)
+    plt.title(f"{alg_vs_name} on {args.num_city} tower (share={shared})")
     dir = os.path.join(_save_dir)
     if not os.path.exists(dir):
         os.makedirs(dir)
-    plt.savefig(os.path.join(dir, f"Greedy_VS_RL on {args.num_city} Tower share={shared}.png"))
+    plt.savefig(os.path.join(dir, f"{alg_vs_name} on {args.num_city} Tower (share={shared}).png"))
     # plt.show()
 
     # 储存csv
@@ -89,7 +99,7 @@ def test_generalization_tower_change(upper,lower,share,run_alg_name,_save_dir):
     parser.add_argument('--dropout', default=0.1, type=float)
     parser.add_argument('--layers', dest='num_layers', default=1, type=int)
     parser.add_argument('--train-size', default=-1, type=int)
-    parser.add_argument('--valid-size', default=10, type=int)
+    parser.add_argument('--valid-size', default=1000, type=int)
     parser.add_argument('--depot_num', default=5, type=int)
     # 解析为args
     args = parser.parse_known_args()[0]  # colab环境跑使用
@@ -97,15 +107,14 @@ def test_generalization_tower_change(upper,lower,share,run_alg_name,_save_dir):
     args.test = True
 
     if share:
-        args.checkpoint = os.path.join("TW_random_Cons_train_log_share","50","2_11_0_21_59")
+        args.checkpoint = os.path.join("时间窗口TW","TW_random_train_log_share","200(tem)")
     else:
-        args.checkpoint=os.path.join("TW_random_Cons_train_log","50","2_11_0_20_17")
+        args.checkpoint = os.path.join("时间窗口TW","TW_random_train_log","200(tem)")
 
-    # run_alg_name = ["Greedy", "RL"]
     print("比较算法：", run_alg_name)
     reward_list_dict = {}
 
-    tower_list = list(range(20, 101, 10))
+    tower_list = list(range(20, 201, 10))
     for tower_n in tower_list:
         args.num_city = tower_n
         # reward_rl, reward_greedy = run_exp(share, args)
@@ -121,13 +130,14 @@ def test_generalization_tower_change(upper,lower,share,run_alg_name,_save_dir):
     plt.xlabel('Num of Tower')
     plt.ylabel('Total distance')
     plt.legend()
-    plt.title(f"Greedy_VS_RL on {args.depot_num} UAV (share={share})")
+    alg_vs_name=" VS ".join(run_alg_name)
+    plt.title(f"{alg_vs_name} on {args.depot_num} UAV (share={share})")
 
     dir = os.path.join(_save_dir)
     if not os.path.exists(dir):
         os.makedirs(dir)
     share=str(share)
-    plt.savefig(os.path.join(dir, f"Greedy_VS_RL on {args.depot_num} UAV (share={share}).png"))
+    plt.savefig(os.path.join(dir, f"{alg_vs_name} on {args.depot_num} UAV (share={share}).png"))
     # plt.show()
 
     # 储存csv
@@ -173,63 +183,82 @@ def run_multi_alg_test(upper,lower,share_depot, args, algorithm):
     algorithm_result={}
 
     # -----------------------------------------------------------------Greedy
-    if "greedy" in algorithm or "Greedy" in algorithm:
+    if "Greedy" in algorithm or "Greedy" in algorithm:
         # from Greedy_VRP_TW_random import run_greedy_VRP
 
-        reward_greedy = run_greedy_VRP(test_data.static, args.num_city, args.depot_num,upper,lower,share=share_depot)
-        algorithm_result["Greedy"]=reward_greedy
+        algorithm_result["Greedy"]=run_greedy_VRP(test_data.static, args.num_city, args.depot_num,upper,lower,share=share_depot)
+    if "Greedy_Over" in algorithm:
+        algorithm_result["Greedy_Over"] = run_greedy_overestimate(test_data.static, args.num_city, args.depot_num,upper,lower,share=share_depot)
 
     #------------------------------------------------------------------RL
     if "RL" in algorithm:
-        STATIC_SIZE = 2  # (x, y)
-        DYNAMIC_SIZE = 2  # (load, demand)
-        if share_depot:
-            actor = DRL4TSP(STATIC_SIZE,
-                            DYNAMIC_SIZE,
-                            args.hidden_size,
-                            car_load,
-                            args.depot_num,
-                            update_dynamic_shared,
-                            update_mask_shared_TW_constraint,
-                            node_distance_shared,
-                            args.num_layers,
-                            args.dropout,
-                            upper,lower).to(device)
-        else:
-            actor = DRL4TSP(STATIC_SIZE,
-                            DYNAMIC_SIZE,
-                            args.hidden_size,
-                            car_load,
-                            args.depot_num,
-                            update_dynamic_independent,
-                            update_mask_independent_TW_constraint,
-                            node_distance_independent,
-                            args.num_layers,
-                            args.dropout,
-                            upper,lower).to(device)
+        RL_test_reward =run_RL_exp(upper,lower,share_depot,args)
 
-        print(f"RL测试模式：读取ckpt:{args.checkpoint}")
-        path = os.path.join(args.checkpoint, 'actor.pt')
-        actor.load_state_dict(torch.load(path, device))  # load_state_dict：加载模型参数
-
-        if share_depot:
-            test_dir = 'test_picture_shared_depot'
-        else:
-            test_dir = 'test_picture'
-
-        test_loader = DataLoader(test_data, args.batch_size, False, num_workers=0)
-
-        RL_test_out, RL_test_reward = validate(test_loader, actor, reward, render, test_dir, num_plot=5,
-                                         depot_number=args.depot_num)
+        # # todo 能不能用封装的-------------------------？？？？？？？？？？？？
+        # STATIC_SIZE = 2  # (x, y)
+        # DYNAMIC_SIZE = 2  # (load, demand)
+        # if share_depot:
+        #     actor = DRL4TSP(STATIC_SIZE,
+        #                     DYNAMIC_SIZE,
+        #                     args.hidden_size,
+        #                     car_load,
+        #                     args.depot_num,
+        #                     update_dynamic_shared,
+        #                     update_mask_shared_TW,
+        #                     node_distance_shared,
+        #                     args.num_layers,
+        #                     args.dropout,
+        #                     upper,lower).to(device)
+        # else:
+        #     actor = DRL4TSP(STATIC_SIZE,
+        #                     DYNAMIC_SIZE,
+        #                     args.hidden_size,
+        #                     car_load,
+        #                     args.depot_num,
+        #                     update_dynamic_independent,
+        #                     update_mask_independent_TW,
+        #                     node_distance_independent,
+        #                     args.num_layers,
+        #                     args.dropout,
+        #                     upper,lower).to(device)
+        #
+        # print(f"RL测试模式：读取ckpt:{args.checkpoint}")
+        # path = os.path.join(args.checkpoint, 'actor.pt')
+        # actor.load_state_dict(torch.load(path, device))  # load_state_dict：加载模型参数
+        #
+        # if share_depot:
+        #     test_dir = 'test_picture_shared_depot'
+        # else:
+        #     test_dir = 'test_picture'
+        #
+        # test_loader = DataLoader(test_data, args.batch_size, False, num_workers=0)
+        #
+        # RL_test_out, RL_test_reward = validate(test_loader, actor, reward, render, test_dir, num_plot=5,
+        #                                  depot_number=args.depot_num)
+        # print(f"不封装的RL_test_reward={RL_test_reward}")
         algorithm_result["RL"]= RL_test_reward
-
+    if "RL_Over" in algorithm:
+        RL_test_reward = run_RL_overest(upper,lower,share_depot,args)
+        algorithm_result["RL_Over"] = RL_test_reward
     return  algorithm_result
 
 if __name__ == '__main__':
-    save_dir = "Generalization_test_TW_random_constrain"
+
     upper, lower = 1.1, 0.9
     share=True
+    compare_alg= [
+        "RL",
+        "RL_Over",
+        "Greedy",
+        "Greedy_Over"
+    ]
 
-    test_generalization_uav_change(upper, lower, shared=share, run_alg_name=["Greedy"], _save_dir=save_dir)
-    test_generalization_tower_change(upper, lower, share=share, run_alg_name=["Greedy"], _save_dir=save_dir)
+    save_dir = "(tem200)Generalization_TW_random "+" VS ".join(compare_alg)
+    print(f"Save dir:{save_dir}")
+
+    test_generalization_uav_change(upper, lower, shared=share, run_alg_name=compare_alg, _save_dir=save_dir)
+    # test_generalization_tower_change(upper, lower, share=share, run_alg_name=compare_alg, _save_dir=save_dir)
+
+    print(f"Save dir:{save_dir}")
     print("Running ends.")
+
