@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
 
-def DRL4VRP_Problem(tower_num, uav_num, position,share):
+def DRL4VRP_Problem(tower_num, uav_num, position,est_upper, est_lower, _share):
     """
     """
     map_size = 1  # 这是边长。100*100.能量需要2*√2 *100=280
@@ -25,6 +25,10 @@ def DRL4VRP_Problem(tower_num, uav_num, position,share):
     pos_self = np.expand_dims(position,1).repeat(tower_num+uav_num,axis=1) # 扩展一下维度，用于距离矩阵计算
     n2n_distance=np.sqrt(np.sum(np.square(pos_self-position),axis=2))
 
+    # 2.7新增：动态环境估计的上下界
+    est_upper=est_upper
+    est_lower=est_lower
+
 
     def cal_distance_list(l1_to_l2):
         """
@@ -41,7 +45,10 @@ def DRL4VRP_Problem(tower_num, uav_num, position,share):
         p2 = np.array(p2)
         return np.linalg.norm(p1 - p2)
 
+    def get_random_factor(upper,lower):
 
+        # return lower + np.random.rand() * (upper - lower) #  20+200 share:28.216352640810392
+        return upper # 20+200 no share:29.416347104914276 【Over estimate 实验要启用这一行】
     '''
     首先要怎么比较：
       1，使用srp的代码的版本是要用训练好的网络，给定一定数量（1000）的地图，给出平均路程结果
@@ -62,7 +69,7 @@ def DRL4VRP_Problem(tower_num, uav_num, position,share):
     '''
 
 
-    def plot_track(points_set,save_dir):
+    def plot_track(points_set,total_dis,save_dir):
         '''
         用于画出轨迹的动图 todo 现在只能画一张图……【要限定固定的画图张数量吗
         '''
@@ -101,11 +108,12 @@ def DRL4VRP_Problem(tower_num, uav_num, position,share):
             return lines
 
         ani = animation.FuncAnimation(fig, animate, 50, init_func=init, interval=200)
-        title=f"Greedy T{tower_num} UAV{uav_num} share={str(share)}"
+        title=f"Greedy T{tower_num} UAV{uav_num} reward{round(total_dis,3)} share={str(_share)}"
         plt.title(title)
         ani.save(os.path.join(save_dir,f"{title}.gif"), writer='pillow',dpi=500)  # 保存
         # plt.show()
         plt.close('all')
+        print(f"{title} 绘图完成")
 
 
 
@@ -206,7 +214,7 @@ def DRL4VRP_Problem(tower_num, uav_num, position,share):
             """
             【共享仓库版本】
             由于需要考虑电塔的demand，nearest定义改为距离+demand最小， 然后再加上由函数外界重新判断是否电量足够，不够就回仓库……
-            :return: 返回一个【没访问过的】、且过去tower+回仓库最总距离最短的：tower 编号，去tower距离、tower回depot距离
+            :return: 返回一个【没访问过的】、且过去tower距离最短的：tower 编号，去tower距离、tower回depot距离
             """
 
             def get_farthest_depot_dis():
@@ -233,13 +241,14 @@ def DRL4VRP_Problem(tower_num, uav_num, position,share):
 
         # uav_index = 0
         uav_order=[(i,0) for i in range(uav_num)] # (uav_id, task_time)
+        step=0
         # 开始循环每个无人机
         while not all(visited_tower) or any(empty_depot):  # 如果还有电塔没有访问、是否所有无人机都在仓库
             # uav_index %= uav_num
             uav_index=uav_order[0][0]
             uav = uav_set[uav_index]
             # 计算最近的点的下标和距离
-            if share:
+            if _share:
                 near_tower_index, dis_go, dis_to_depot, demand = uav.get_cost_min_tower_share() # fix:考虑电塔demand
                 in_depot = uav.is_in_depot_share()
             else:
@@ -247,7 +256,7 @@ def DRL4VRP_Problem(tower_num, uav_num, position,share):
                 in_depot = uav.is_in_depot()
 
             if in_depot: # fix√ # 如果在仓库。（这个是留给以后扩展成可以连续访问仓库用的）
-                if 1.1*(dis_go + dis_to_depot + demand) > uav.energy:  # 电量不够：自己的任务已经完成了
+                if est_upper*(dis_go + dis_to_depot + demand) > uav.energy:  # 电量不够：自己的任务已经完成了
                     #if dis_go != math.inf:
                         # print(f"Note: 最近的tower是{dis_go} 回仓库是{dis_to_depot}，"
                         #       f"需求加来回路程>满格能量：{uav.energy}。uav留在原地")
@@ -267,13 +276,15 @@ def DRL4VRP_Problem(tower_num, uav_num, position,share):
                     visited_tower[near_tower_index] = True
                     uav.current_node_id= near_tower_index + uav_num # 切换当前位置
 
-                    cost=(dis_go+demand)*(0.9+np.random.rand()*(1.1-0.9))# fix:考虑电塔demand。
+                    rand_factor = get_random_factor(est_upper,est_lower)
+
+                    cost=(dis_go)*rand_factor +demand # fix:考虑电塔demand。
                     uav.energy -=  cost
                     uav_order.append((uav_index,uav_order.pop(0)[1]+cost)) # 添加任务时间排序
 
             else:  # 不在仓库
-                if  1.1*(dis_go + dis_to_depot + demand) > uav.energy:  # 电量不够 回到自己的仓库
-                    if share: ## 共享：找到最近的【空】仓库
+                if  est_upper*(dis_go + dis_to_depot + demand) > uav.energy:  # 电量不够 回到自己的仓库
+                    if _share: ## 共享：找到最近的【空】仓库
                         depot_id, back_depot_energy = uav.get_nearest_depot_id()
                     else: # 非共享：直接返回自己的仓库
                         depot_id=uav.depot_id
@@ -281,8 +292,9 @@ def DRL4VRP_Problem(tower_num, uav_num, position,share):
 
                     if not empty_depot[depot_id]: #检查是否为空
                         raise ValueError(f"试图访问非空的充电桩{uav.current_node_id }")
+                    rand_factor = get_random_factor(est_upper,est_lower)
 
-                    cost = back_depot_energy*(0.9+np.random.rand()*(1.1-0.9))
+                    cost = back_depot_energy*rand_factor
                     uav.energy -= cost
                     if uav.energy<0:
                         raise ValueError("还没回到充电桩就没电了，，")
@@ -290,19 +302,25 @@ def DRL4VRP_Problem(tower_num, uav_num, position,share):
                     uav.current_node_id = depot_id  # 更新为成被选择的充电桩
                     empty_depot[depot_id] = False
                     uav.energy = max_energy
-                    uav_order.append((uav_index, uav_order.pop(0)[1] + cost+0.1*(0.9+np.random.rand()*(1.1-0.9))))  # 添加任务时间排序
+                    # rand_factor = get_random_factor(est_upper,est_lower)
+                    uav_order.append((uav_index, uav_order.pop(0)[1] + cost+0.1))  # 添加任务时间排序
                 else:  # 如果能量足够：过去下一个tower。并且标记已访问。消耗能量
                     uav.track.append(tower_position[near_tower_index])
                     uav.current_node_id=near_tower_index+uav_num # 转换成node id
                     tower_demand[near_tower_index]=0 # 更新demand
                     visited_tower[near_tower_index] = True
-                    cost = (dis_go + demand) * (0.9 + np.random.rand() * (1.1 - 0.9))  # fix: 减去电塔demand
+                    rand_factor = get_random_factor(est_upper,est_lower)
+                    cost = (dis_go ) * rand_factor + demand # fix: 减去电塔demand
                     uav.energy -= cost
                     uav_order.append((uav_index, uav_order.pop(0)[1] + cost))  # 添加任务时间排序
             if uav.energy<0:
                 raise ValueError("uav energy < 0")
             # uav_index += 1
             uav_order.sort(key=lambda x: x[1])
+            step+=1
+            if step> tower_num*2:
+                print("greedy达到最大迭代次数，退出。")
+                break
 
         if (tower_demand>0).any():
             raise ValueError("The uav haven't visited all the tower!!!")
@@ -319,7 +337,7 @@ def DRL4VRP_Problem(tower_num, uav_num, position,share):
             total_dis += dis # 记录总距离。
 
 
-        # plot_track(all_track,"Greedy_GIF") # 画出本地图的动态图。
+        # plot_track(all_track,total_dis,"Greedy_GIF") # 画出本地图的动态图。
 
         return total_dis
 
@@ -327,7 +345,7 @@ def DRL4VRP_Problem(tower_num, uav_num, position,share):
 
 
 
-def run_greedy_VRP(position_set,tower_n,uav_n,share):
+def run_greedy_VRP(position_set,tower_n,uav_n,upper,lower,share):
     '''
     适用于一次性运行n个贪心算法VRP问题实例。是用于把RL的数据集传进来训练的接口。
     position_set: 为多个地图的集合。
@@ -343,7 +361,7 @@ def run_greedy_VRP(position_set,tower_n,uav_n,share):
     run_time=position_set.shape[0]
     for t in range(run_time):
         position = position_set[t]  # 使用外界传进来的坐标
-        reward = DRL4VRP_Problem(tower_n, uav_n, position,share)
+        reward = DRL4VRP_Problem(tower_n, uav_n, position,upper,lower,share)
         reward_set.append(reward)
 
     average_reward = sum(reward_set) / run_time
@@ -365,7 +383,7 @@ def draw_path_change(share):
     plt.plot(list(range(1,10)),y_avg_reward)
     plt.show()
 
-def draw_uav_change(share):
+def draw_uav_change(upper,lower,share):
     '''
     电塔数量固定，看飞机数量的影响
     '''
@@ -376,7 +394,7 @@ def draw_uav_change(share):
     uav_n_ub=10
     for uav_num in range(uav_n_lb, uav_n_ub):
         position_set1 = np.random.random(size=(run_times, 2, tower_n + uav_num))
-        reward_set = run_greedy_VRP(position_set1, tower_n, uav_num, share)
+        reward_set = run_greedy_VRP(position_set1, tower_n, uav_num, upper,lower,share)
         print(f"Run {run_times} times. Average tour length:  {np.mean(reward_set)}")
         y_avg_reward.append(np.mean(reward_set))
     plt.plot(list(range(uav_n_lb,uav_n_ub)),y_avg_reward)
@@ -391,18 +409,20 @@ if __name__ == "__main__":
     # share_depot=False
     np.random.seed(111) #方便debug。
     position_set = np.random.random(size=(run_times, 2, tower_n + uav_n)) # 共用地图。
+    share=True
+    upper, lower=1.1, 0.9
 
-    # todo 怎么感觉Greedy 怪怪的……选最近的仓库要不要仅根据当前点-下一个点的距离，来贪心？
-
-    # # # 运行共享
-    # reward_set_share=run_greedy_VRP(position_set,tower_n,uav_n,share=True) # 共享的效果也太差了……因为一直在局部搜索，去其他人仓库的约束其实还挺差的
-    # print(f"Run {run_times} times. 贪心共享 Average tour length:  {np.mean(reward_set_share)}") #
-
-    # # 运行非共享
-    reward_set_independent = run_greedy_VRP(position_set, tower_n, uav_n, share=False) # 非共享版本
-    print(f"Run {run_times} times. 贪心非共享 Average tour length:  {np.mean(reward_set_independent)}")  #28.335755261382662
+    if share:
+        # # # 运行共享
+        reward_set_share=run_greedy_VRP(position_set,tower_n,uav_n,upper,lower,share=True) # 共享的效果也太差了……因为一直在局部搜索，去其他人仓库的约束其实还挺差的
+        print(f"Run {run_times} times. 贪心 Share Average tour length:  {np.mean(reward_set_share)}") #
+        # 5+50:  13.378931645824348
+    else:
+        # # 运行非共享
+        reward_set_independent = run_greedy_VRP(position_set, tower_n, uav_n,upper,lower, share=False) # 非共享版本
+        print(f"Run {run_times} times. 贪心非Share Average tour length:  {np.mean(reward_set_independent)}")
+        # 5+50: 13.655793214349499
 
     # draw_path_change()
     # draw_uav_change(share=False)
     pass
-
