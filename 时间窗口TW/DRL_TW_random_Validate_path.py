@@ -1,5 +1,7 @@
 # TW +random 环境。adv=global，10W数据，20+200
 import os
+import traceback
+
 os.environ["CUDA_VISIBLE_DEVICES"] = "1" # todo 记得修改不同的gpu编号
 import time
 import argparse
@@ -431,16 +433,21 @@ class DRL4TSP(nn.Module):
         # 给每个无人机tour里记录。
 
         max_steps = sequence_size if mask_fn_dyn is None else 2*num_nodes  # 如果设置mask函数，为了避免死循环，这是最大步数。
-
+        fail_set=[]
+        copy_tour_idx=[ [i.copy() for i in t]for t in tour_idx_tw]
         # kuaisu 快速跳转
         for step in range(max_steps):  # 主循环
             try:
-                ptr_tw = torch.tensor([tour_idx_tw[b][car_id_tw[b]].pop(0) for b in range(batch_size)],
-                                      # todo 0217修改了。.pop(0) 放在这里。
-                                      dtype=torch.int64).unsqueeze(1)  # 取出下一台无人机所在的点
+                ptr_tw=[]
+                for b in range(batch_size):
+                    if len(tour_idx_tw[b][car_id_tw[b]])>1:
+                        ptr_tw.append(tour_idx_tw[b][car_id_tw[b]].pop(0))
+                    else:
+                        ptr_tw.append(tour_idx_tw[b][car_id_tw[b]][0])
+                                           # 取出下一台无人机所在的点 # todo 0217修改了。.pop(0) 放在这里。
+                ptr_tw = torch.tensor(ptr_tw,dtype=torch.int64).unsqueeze(1)
             except Exception as e:
-                print("出现如下异常%s"%e)
-                print(f"ptr_tw={ptr_tw}")
+                print(f"出现如下异常 {traceback.format_exc()}")
 
 
             if mask_fn_dyn is not None:
@@ -455,15 +462,14 @@ class DRL4TSP(nn.Module):
             try:
                 action=torch.tensor([tour_idx_tw[b][car_id_tw[b]][0] for b in range(batch_size) ])# todo 0217修改了。.pop(0) 取消
             except Exception as e:
-                print("出现如下异常%s"%e)
-                print(f"ptr_tw={ptr_tw}")
+                print(f"出现如下异常 {traceback.format_exc()}")
 
             # 选择好了下一个访问的点，访问，更新动态信息。
             if dynamic_fn_dyn is not None:
                 try:
                     #  # B 2 L 这里还是【当前小车】的load和当前小车的新一步action，更新地图里的load和demand
                     dynamic, next_dis = dynamic_fn_dyn(self.depot_num, self.car_load, dynamic, distance, action.data,
-                                             ptr_tw,self.est_upper,self.est_lower)
+                                             ptr_tw,self.est_upper,self.est_lower,fail_set)
                 except Exception as e:
                     print(e)
 
@@ -488,16 +494,15 @@ class DRL4TSP(nn.Module):
         else:
             print(f"达到最大迭代次数{max_steps}退出")
             if (dynamic[:, 1, :] > 0).any():
-                print("仍然有需求尚未满足")
-                print(f"(dynamic[:, 1, :] > 0).nonzero()=\n{(dynamic[:, 1, :] > 0).nonzero()}",)
+                print("仍然有需求尚未满足(forward_validate_path)")
+                # print(f"(dynamic[:, 1, :] > 0).nonzero()=\n{(dynamic[:, 1, :] > 0).nonzero()}",)
 
             if (dynamic[:, 1, :] < 0).any():
                 print("仍有飞机没有回到充电桩！？")
-                print(f"(dynamic[:, 1, :] <  0).nonzero()=\n{(dynamic[:, 1, :] <  0).nonzero()}", )
-
+                # print(f"(dynamic[:, 1, :] <  0).nonzero()=\n{(dynamic[:, 1, :] <  0).nonzero()}", )
 
         if (dynamic[:,1,:]>0).any():# 如果仍然有需求
-            raise ValueError("仍然有需求尚未满足")
+            raise ValueError("仍然有需求尚未满足uui")
 
         # tour_idx 大小：最外层是list，包含num depot 个元素，每个元素是batch*无人机飞行过node个数。
         # 现在的tour_idx_tw是B，depot_num 的嵌套list (而且大家的tour长度不一样……）
@@ -510,8 +515,9 @@ class DRL4TSP(nn.Module):
         #     for tour in uav_tour: # 处理长度吧……????
         #         tour+=(max_len-len(tour))*tour[-1:]
         #     tour_per_uav.append(torch.tensor(uav_tour).to(dynamic.device))
-
-        return True # tour_per_uav , tour_logp
+        fail_set=set(fail_set)
+        print(f"fail set len={len(fail_set)}: {fail_set},")
+        return True ,fail_set # tour_per_uav , tour_logp
 
 
     def get_init_order(self,batch_size,car_num):
@@ -822,7 +828,7 @@ def update_dynamic_shared_Random(num_depots, max_car_load, dynamic, distance, ne
         # 检查上一次选择的节点与这次选择的节点的差值
         check_load = load - demand - diff_distances
         if (check_load < 0).any():
-            print(check_load)
+            # print(check_load)
             raise ValueError("Error: 存在负载为负数.")
 
         # 上一次选择的节点与这次选择的节点的差值
@@ -918,7 +924,7 @@ def update_dynamic_shared(num_depots, max_car_load, dynamic, distance, next_idx,
         # 检查上一次选择的节点与这次选择的节点的差值
         check_load = load - demand - diff_distances
         if (check_load < 0).any():
-            print(check_load)
+            # print(check_load)
             raise ValueError("Error: 存在负载为负数.")
 
         # 上一次选择的节点与这次选择的节点的差值
@@ -1175,7 +1181,7 @@ def update_mask_independent(num_depots, dynamic, n2n_distance, current_idx, car_
 
     return new_mask.float()
 
-def update_dynamic_independent_Random(num_depots, max_car_load, dynamic, n2n_distance, next_idx, current_idx, upper, lower):  # 加了参数：访问的前一个点。
+def update_dynamic_independent_Random(num_depots, max_car_load, dynamic, n2n_distance, next_idx, current_idx, upper, lower, fail_set):  # 加了参数：访问的前一个点。
 
     """
     这是用于更新当前地图的dynamic的函数。此函数用于【非共享仓库】。
@@ -1206,15 +1212,22 @@ def update_dynamic_independent_Random(num_depots, max_car_load, dynamic, n2n_dis
         # 上一次选择的节点与这次选择的节点的差值
         check_load = load - demand - distance # todo 给demand
         if (check_load < 0).any():
-            print(check_load)
-            raise ValueError("Error: 存在负载为负数.")
+            # print(check_load)
+            # raise ValueError("Error: 存在负载为负数.")
+            print("Error: 存在负载为负数. 4")
+            s=(check_load < 0).nonzero()[:,0].tolist()
+            print(s)
+            fail_set+=s
+            check_load[s, 0] += 100
+            load[s, 0] += 100
 
         new_load = torch.clamp(check_load, min=0)  # 当前负载-下一个点需求-路程损耗
         del check_load # todo 新增解决OOM
 
         check_demand = demand - load + distance # 下一个点需求减去车辆走路后的负载。
         if (check_demand>0).any():
-            raise ValueError("Error:无法满足下一个城市的需求。") # 注意只有需求无法分割的时候，这个报错才是必要的
+            #raise ValueError("Error:无法满足下一个城市的需求。") # 注意只有需求无法分割的时候，这个报错才是必要的
+            pass
         new_demand = torch.clamp(check_demand, min=0)
         del check_demand  # todo 新增解决OOM
         # 将载重量广播到所有节点，但单独更新需求量
@@ -1294,7 +1307,7 @@ def update_dynamic_independent(num_depots, max_car_load, dynamic, n2n_distance, 
         # 上一次选择的节点与这次选择的节点的差值
         check_load = load - demand - distance # todo 给demand
         if (check_load < 0).any():
-            print(check_load)
+            # print(check_load)
             raise ValueError("Error: 存在负载为负数.")
 
         new_load = torch.clamp(check_load, min=0)  # 当前负载-下一个点需求-路程损耗
@@ -1550,6 +1563,7 @@ def validate(data_loader, actor, reward_fn, render_fn=None, save_dir='.',
         os.makedirs(save_dir)
 
     rewards = []
+    fail_count=0
     for batch_idx, batch in enumerate(data_loader):
 
         static, dynamic, x0 = batch
@@ -1562,9 +1576,10 @@ def validate(data_loader, actor, reward_fn, render_fn=None, save_dir='.',
 
             # 关键步骤！！！，把静态数据和动态数据进行actor操作，获得访问节点的索引。
             tour_indices, _,tour_idx_tw = actor.forward(static, dynamic, x0)
-            valid_suc = actor.forward_validate_path(static, dynamic, tour_idx_tw)
+            valid_suc, fail = actor.forward_validate_path(static, dynamic, tour_idx_tw)
             if valid_suc is True:
                 print(f"Valid_success")
+                fail_count+=len(fail)
             else:
                 print("???????????")
                 raise ValueError("?????")
@@ -1584,8 +1599,9 @@ def validate(data_loader, actor, reward_fn, render_fn=None, save_dir='.',
             # render_dynamic(static, tour_indices,depot_number, "GIF")
     # 将模型 actor 设置回训练模式
     actor.train()
+    print(f"fail times 坠机次数={fail_count}")
     # 返回平均奖励
-    return np.mean(rewards), rewards
+    return np.mean(rewards), rewards,fail_count
 
 
 def train(actor, critic, share,task, num_city, train_data, valid_data, reward_fn,
@@ -1886,10 +1902,10 @@ def run_RL_exp(share_depot, args):
 
     test_loader = DataLoader(test_data, args.batch_size, False, num_workers=0)
 
-    test_out, test_reward= validate(test_loader, actor, reward, render, test_dir, num_plot=1,
+    test_out, test_reward,fail_count = validate(test_loader, actor, reward, render, test_dir, num_plot=1,
                                      depot_number=args.depot_num)
 
-
+    print(f"valid 结束。坠机概率{fail_count/args.valid_size}")
 
     # print("DRL:Average tour length in test set: ", test_out)
     # reward_greedy = run_greedy_VRP(test_data.static, args.num_city, args.depot_num,share=share_depot)
@@ -1910,7 +1926,7 @@ if __name__ == '__main__':
     parser.add_argument('--checkpoint', default=None)
     parser.add_argument('--test', action='store_true', default=False)
     parser.add_argument('--task', default='vrp')
-    parser.add_argument('--nodes', dest='num_city', default=50, type=int)  # todo 对齐#########
+    parser.add_argument('--nodes', dest='num_city', default=200, type=int)  # todo 对齐#########
     # parser.add_argument('--actor_lr', default=5e-4, type=float)
     # parser.add_argument('--critic_lr', default=5e-4, type=float)
     parser.add_argument('--actor_lr', default=1e-4, type=float)  # 学习率，现在在训练第4epoch，我手动改了一下
@@ -1923,7 +1939,7 @@ if __name__ == '__main__':
     parser.add_argument('--layers', dest='num_layers', default=1, type=int)
     parser.add_argument('--train-size', default=100000, type=int)  #fixme!!!!!!!!!!!!
     parser.add_argument('--valid-size', default=1000, type=int)
-    parser.add_argument('--depot_num', default=5, type=int)  # todo ###############
+    parser.add_argument('--depot_num', default=20, type=int)  # todo ###############
 
     # 解析为args
     args = parser.parse_known_args()[0]  # colab环境跑使用
