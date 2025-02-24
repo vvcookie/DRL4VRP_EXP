@@ -1,7 +1,6 @@
-# -*- coding: utf-8 -*-
-# todo 此代码goal是优化总路程。且改进了重新选点的实现方式：使用mask来间接修改点。
+# todo TW adv=global，10W数据，训练5+50..学习率 1e-3 LRup,
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "2" # todo 记得修改不同的gpu编号
+os.environ["CUDA_VISIBLE_DEVICES"] = "3" # todo 记得修改不同的gpu编号
 import time
 import argparse
 import datetime
@@ -12,19 +11,29 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 
-# from Greedy_VRP import run_greedy_VRP
-if torch.cuda.is_available():  # 一定要放在import matplotlib.pyplot之前
-    print("using cuda")
-    device = torch.device("cuda")
-    import matplotlib
-    matplotlib.use('Agg')  # 防止尝试使用图形界面，允许在没有图形界面的环境中运行。
-else:
-    print("using cpu")
-    device = torch.device("cpu")
+print("TW adv=global，10W数据，训练5+50..学习率 1e-3 LRup,")
+
+print("using cpu")
+device = torch.device("cpu")
+import matplotlib
+matplotlib.use('Agg')  # 防止尝试使用图形界面，允许在没有图形界面的环境中运行。
+
+debug_gpu=False
+debug_batch=False
+
+#
+# if torch.cuda.is_available():  # 一定要放在import matplotlib.pyplot之前
+#     print("using cuda")
+#     device = torch.device("cuda")
+#     import matplotlib
+#     matplotlib.use('Agg')  # 防止尝试使用图形界面，允许在没有图形界面的环境中运行。
+# else:
+#     print("using cpu")
+#     device = torch.device("cpu")
+#     import matplotlib
+#     matplotlib.use('Agg') # 防止尝试使用图形界面，允许在没有图形界面的环境中运行。
+
 import matplotlib.pyplot as plt
-
-
-# %matplotlib inline
 
 
 class Encoder(nn.Module):
@@ -158,7 +167,6 @@ class DRL4TSP(nn.Module):
                  dropout=0.):  ##########################################################
         super(DRL4TSP, self).__init__()
 
-        self.static_hidden = None
         if dynamic_size < 1:
             raise ValueError(':param dynamic_size: must be > 0, even if the '
                              'problem has no dynamic elements')
@@ -184,6 +192,8 @@ class DRL4TSP(nn.Module):
 
         # self.x0 = torch.zeros((1, static_size, 1), requires_grad=True, device=device)
 
+
+
     def forward(self, static, dynamic, decoder_input=None,
                 last_hh=None):
         """
@@ -203,7 +213,7 @@ class DRL4TSP(nn.Module):
         last_hh: Array of size (batch_size, num_hidden)
             Defines the last hidden state for the RNN
         """
-        # ---这是同时决策版本。------------------------------------------------------
+
         # 这里已经是坐标的形式了！！！
         batch_size, input_size, sequence_size = static.size()
         distance = self.node_distance_fn(static, self.depot_num)  # (B,num_node,num_node) # node 2 node 的距离
@@ -211,296 +221,295 @@ class DRL4TSP(nn.Module):
             raise ValueError("DRL4TSP decoder input is None!")
 
         num_nodes = static.size(2)  # =总节点=city+depot
-        mask = torch.ones(batch_size, sequence_size, device=device)  # 0是mask掉。
 
-        #car_id = 0
-        car_load = [torch.full((batch_size,), self.car_load) for _ in range(self.depot_num)]
+        #----------TW start--------------
+        car_seq_order=self.get_init_order(batch_size,self.depot_num)
+        car_id_tw = self.get_next_car_id(car_seq_order)#.detach() # todo为什么要用tensor！
+        car_load_tw = [[self.car_load]*self.depot_num  for _ in range(batch_size)] #list,(B,car_num)
+        # ----------TW end--------------
 
-        # 使用 arange 生成 depot 数字，然后扩展为 (depot_num, 1, batch_size)
-        initial_depot = torch.arange(self.depot_num).view(self.depot_num, 1, 1).expand(self.depot_num, 1,
-                                                                                       batch_size).tolist()
-        # 给每个无人机tour里记录初始仓库。tour idx 的大小是num_car,tour length,B,
-        tour_idx = [[torch.tensor(initial_depot[i][0]).unsqueeze(1).to(device)] for i in
-                    range(self.depot_num)]  # num_car, 1, batch_size
-        tour_logp = []# 最终的访问序列。
+        # 给每个无人机tour里记录。tour idx 的大小是num_car,tour length,B,
+        #----------TW start--------------
+        tour_idx_tw = [[[i] for i in range(self.depot_num)] for _ in range(batch_size)] # todo TW: (B,num_car,)
+        # print(f"tour_idx_tw={tour_idx_tw}")
+        # ----------TW end--------------
 
-        # # ptr 大小B 1。
-        # current_idx = tour_idx[0][-1].clone().detach()  # 当前第0辆无人机的位置。从第一辆无人机开始，取最后一个（其实只有一个元素）所在下标。
+        # # 最终的访问序列的logp
+        tour_logp = [] # todo 修改格式？？？？？？？？
 
-        max_steps = sequence_size if self.mask_fn is None else 500  # 如果设置mask函数，为了避免死循环，这是最大步数。
+        # ptr 大小B 1。ptr更新！！！更新为下一个无人机的当前位置。
+        # ptr = tour_idx[0][-1].clone().detach()  # B，1第0辆无人机的当前位置tensor。
+        # ----------TW start--------------
+        # ptr_tw = torch.tensor([tour_idx_tw[b][car_id_tw[b]] for b in range(batch_size)],dtype=torch.int64)
+        # todo： 已修改成使用car_id来选取当前点（虽然初始是0）【已删除，移到下面】
+        # print(f"ptr_tw={ptr_tw}")
+        # ----------TW end--------------
 
-        self.static_hidden = self.static_encoder(static) # 只需要计算一次
+        max_steps = sequence_size if self.mask_fn is None else 1000  # 如果设置mask函数，为了避免死循环，这是最大步数。# todo debug专用
+        static_hidden = self.static_encoder(static) # 只需要计算一次
+        if debug_gpu:
+            torch.cuda.empty_cache()  # 使用memory_allocated前先清空一下cache
+            allocated = torch.cuda.memory_allocated()
+            reserved = torch.cuda.memory_reserved()
+            print("----1-----")
+            print(f"已分配显存:{allocated / (1024 ** 2)} MB")
+            print(f"保留显存:{reserved / (1024 ** 2)}MB")
 
-        probs_home= [None] * self.depot_num
-        mask_home = [None] * self.depot_num
-        for _ in range(max_steps):  # 主循环
-            tem_next_ptr=[] # 维度是list:num_depot,内部元素(B,)
-            tem_next_logp=[]# 维度是list:num_depot,内部元素(B,)
+        # kuaisu 快速跳转
+        for step in range(max_steps):  # 主循环
 
-            # 所有batch的里面，uav归位+所有city无需求。退出
-            if dynamic.data[:, 1].eq(0).all():
+            ptr_tw = torch.tensor([tour_idx_tw[b][car_id_tw[b]][-1]for b in range(batch_size)],
+                                  dtype=torch.int64).unsqueeze(1) # 取出下一台无人机所在的点
+            if debug_gpu:
+                torch.cuda.empty_cache()  # 使用memory_allocated前先清空一下cache
+                allocated = torch.cuda.memory_allocated()
+                reserved = torch.cuda.memory_reserved()
+                print("----2-----")
+                print(f"已分配显存:{allocated / (1024 ** 2)} MB")
+                print(f"保留显存:{reserved / (1024 ** 2)}MB")
+
+            if self.mask_fn is not None:
+                # 根据当前无人机结束新的访问，结合下一台无人机的。注意这个ptr和dynamic需要是新的,因为需要根据下一个无人机的当前位置，判断下一个点不能去哪。
+                # mask = self.mask_fn(self.depot_num, dynamic, distance, ptr.data, car_id).detach()
+                # ----------TW start--------------
+                mask_tw = self.mask_fn(self.depot_num, dynamic, distance, ptr_tw.data, car_id_tw).detach()
+                # todo 已修改。使用的mask fn是后缀TW的update mask
+                # ----------TW end--------------
+            if debug_gpu:
+                torch.cuda.empty_cache()  # 使用memory_allocated前先清空一下cache
+                allocated = torch.cuda.memory_allocated()
+                reserved = torch.cuda.memory_reserved()
+                print("----3-----")
+                print(f"已分配显存:{allocated / (1024 ** 2)} MB")
+                print(f"保留显存:{reserved / (1024 ** 2)}MB")
+
+            if not mask_tw.byte().any():  # 如果全mask掉了就退出
                 break
 
-            for car_id in range(self.depot_num):
+            # decoder_input = torch.gather(static, 2, ptr.view(-1, 1, 1).expand(-1, input_size, 1)
+            #                              .to(dynamic.device)).detach()  # 更新当前位置信息。
+            # ----------TW start--------------
+            decoder_input_tw = torch.gather(static, 2, ptr_tw.view(-1, 1, 1).expand(-1, input_size, 1)
+                                            .to(dynamic.device)).detach()  # todo 好像这个语句是不用改的。
+            # ----------TW end--------------
 
-                # 替换dynamic里的load！把load换成下一个无人机的load，但demand不变，因为是同一个环境。。
-                dynamic = dynamic.clone()
-                dynamic[:, 0] = car_load[car_id].unsqueeze(1).expand(-1, num_nodes) # safe
+            if debug_gpu:
+                torch.cuda.empty_cache()  # 使用memory_allocated前先清空一下cache
+                allocated = torch.cuda.memory_allocated()
+                reserved = torch.cuda.memory_reserved()
+                print("----4-----")
+                print(f"已分配显存:{allocated / (1024 ** 2)} MB")
+                print(f"保留显存:{reserved / (1024 ** 2)}MB")
 
-                # current_idx 更新,car id 更新。
-                current_idx = tour_idx[car_id][-1].clone().detach()# 当前所在id
+            dynamic_hidden = self.dynamic_encoder(dynamic)  # 编码当前动态信息
+            decoder_hidden = self.decoder(decoder_input_tw)  # 编码当前位置xy静态信息 (B, 2)
 
-                if self.mask_fn is not None:
-                    # 根据当前无人机结束新的访问，结合下一台无人机的.
-                    mask = self.mask_fn(self.depot_num, dynamic, distance, current_idx.data, car_id).detach()
-                if not mask.byte().any():  # 如果全mask掉了就退出
-                    break
+            if debug_gpu:
+                torch.cuda.empty_cache()  # 使用memory_allocated前先清空一下cache
+                allocated = torch.cuda.memory_allocated()
+                reserved = torch.cuda.memory_reserved()
+                print("---5-----")
+                print(f"已分配显存:{allocated / (1024 ** 2)} MB")
+                print(f"保留显存:{reserved / (1024 ** 2)}MB")
 
-                # 更新decoder_input当前位置xy，(B, 2)
-                decoder_input = torch.gather(static, 2, current_idx.view(-1, 1, 1).expand(-1, input_size, 1).to(
-                    dynamic.device)).detach()
+            # 指针网络。里面包含GRU
+            probs, last_hh = self.pointer(static_hidden, dynamic_hidden, decoder_hidden,
+                                          last_hh)  # 得到下一个点的（未mask）概率分布和隐状态。# todo ？？？lasthh这里还有问题
+            probs = F.softmax(probs + mask_tw.log(), dim=1)  # mask操作+softmax Softmax的原因：因为π(a,s)是必须大于0的，用softmax把0映射成很小的数字
 
-                dynamic_hidden = self.dynamic_encoder(dynamic)  # 更新编码当前动态信息
-                decoder_hidden = self.decoder(decoder_input)  # 更新编码当前位置xy静态信息 todo 等debug完之后尝试使用“所有无人机的xy”
+            if debug_gpu:
+                torch.cuda.empty_cache()  # 使用memory_allocated前先清空一下cache
+                allocated = torch.cuda.memory_allocated()
+                reserved = torch.cuda.memory_reserved()
+                print("----6-----------------------------------")
+                print(f"已分配显存:{allocated / (1024 ** 2)} MB")
+                print(f"保留显存:{reserved / (1024 ** 2)}MB")
 
-                # 指针网络。里面包含GRU。
-                probs, last_hh = self.pointer(self.static_hidden, dynamic_hidden, decoder_hidden,
-                                              last_hh)  # 得到下一个点的（未mask）概率分布和隐状态。
-                probs_home[car_id] = probs
-                mask_home[car_id] = mask
-                probs = F.softmax(probs + mask.log(), dim=1)  # mask操作+softmax Softmax的原因：因为π(a,s)是必须大于0的，用softmax把0映射成很小的数字
+            if self.training:
+                try:
+                    m = torch.distributions.Categorical(probs)
+                except:
+                    raise ValueError("Error: m = torch.distributions.Categorical(probs)")
+                # Sometimes an issue with Categorical & sampling on GPU; See:
+                # https://github.com/pemami4911/neural-combinatorial-rl-pytorch/issues/5
+                action = m.sample()  # 根据上面的概率分布，采样一个点。大小B
 
-                # print(f"probs require greadient:{probs.requires_grad}")  # True
-                # print(f"probs is leaf :{probs.is_leaf}")  # False【is_leaf 属性只有在需要求导的时候才有意义。】
+                while not torch.gather(mask_tw, 1, action.data.unsqueeze(1)).byte().all():
+                    action = m.sample()
 
-                if self.training:
-                    try:
-                        m = torch.distributions.Categorical(probs)
-                    except:
-                        raise ValueError("Error: m = torch.distributions.Categorical(probs)")
-                    # Sometimes an issue with Categorical & sampling on GPU; See:
-                    # https://github.com/pemami4911/neural-combinatorial-rl-pytorch/issues/5
-                    ptr = m.sample()  # 根据上面的概率分布，采样一个点。大小B
+                logp = m.log_prob(action) # 记录这个点的概率……
+            else:
+                prob, action = torch.max(probs, 1)  # Greedy
+                logp = prob.log()  # B,1
 
-                    while not torch.gather(mask, 1, ptr.data.unsqueeze(1)).byte().all():
-                        ptr = m.sample()
+            # print(f"action={action}")
 
-                    logp = m.log_prob(ptr) # 记录这个点的概率……# todo 注意！！是因为在这里用ptr获得了logp，所以后续直接修改ptr会报错。
-                else:
-                    prob, ptr = torch.max(probs, 1)  # Greedy
-                    logp = prob.log()  # B,1
+            if debug_gpu:
+                torch.cuda.empty_cache()  # 使用memory_allocated前先清空一下cache
+                allocated = torch.cuda.memory_allocated()
+                reserved = torch.cuda.memory_reserved()
+                print("----7-----")
+                print(f"已分配显存:{allocated / (1024 ** 2)} MB")
+                print(f"保留显存:{reserved / (1024 ** 2)}MB")
 
-                # 记录这个无人机选的点ptr 和logp……………………
-                tem_next_ptr.append(ptr)
-                tem_next_logp.append(logp)
+            # 选择好了下一个访问的点，访问，更新动态信息。
+            if self.update_fn is not None:
 
-                # -------------------结束for every uav循环。-----------------
+                # 获取当前位置
+                #last_visited = tour_idx[car_id][-1] # 这个是当前位置的意思。
+                # ----------TW start--------------
+                # last_visited_tw=ptr_tw  #之前什么鬼bug啊啊！！！干嘛要修改ptr的含义！ # todo之后直接把ptr和last_visited_tw名字统一为cur_pos
+                # ----------TW end--------------
 
-            # 快速跳转用
-            # ---------处理冲突----------------
-            # tem_next_ptr 是len=num_car,内部元素(B,)的列表。
-            #tem_next_ptr2=torch.transpose(torch.stack(tem_next_ptr),1,0).detach()# tensor(B,num_depot)
-            #tem_next_logp2=torch.transpose(torch.stack(tem_next_logp),1,0).detach() # tensor(B,num_depot)
-    
-            duplicates_mask = self.get_duplicate_mask(tem_next_ptr,tem_next_logp).detach() #  tensor(B,num_depot)
-            # if duplicates_mask.requires_grad: # todo 检查没问题后记得删掉
-            #     raise ValueError(f"duplicates_mask.require grad={duplicates_mask.requires_grad}")
-            tem_count=0
-            while duplicates_mask.any():
-                if tem_count>100:
-                    print("duplicate",tem_count)
-                tem_count+=1
-                #for batch_id in range(tem_next_ptr2.size(0)): # todo 这个也要改，不用循环batch了……
-                    # row_ptr, row_logp=tem_next_ptr2[batch_id],tem_next_logp2[batch_id]
-                    # 找出本行里面是否有重复元素
-                if duplicates_mask.any():  # 如果有，遍历选到重复点的car：
-                    # √ 在duplicates_mask里面为True的元素就是 “ptr重复且logp不是同数字的top1的元素”
-                    if tem_count > 100:
-                        print("row_ptr修改前：",tem_next_ptr)
-                    for duplicate_car in duplicates_mask.any(dim=0).nonzero(): # 纵轴比较，找出有重复点的car id
-                        duplicate_car=duplicate_car.item() # duplicate_car是本行中需要重新选点的car id（等价于下标）
-                        # new_ptr, new_logp = self.get_next_ptr_by_mask(row_ptr, duplicates_mask, duplicate_car, mask_home, probs_home, batch_id,tour_idx)
-                        new_ptr, new_logp = self.get_next_ptr_by_mask2_whole(tem_next_ptr,duplicates_mask,duplicate_car, mask_home, probs_home,tour_idx)
-                        # row_ptr[duplicate_car]=new_ptr.clone()
-                        # row_logp[duplicate_car]=new_logp.clone()
-                        # copy_tour=tem_next_ptr[duplicate_car].clone()
-                        # copy_tour[batch_id]=new_ptr # 应该好像是没问题的,ptr本身又不求导
-                        # tem_next_ptr[duplicate_car]=copy_tour
-                        mask_car=duplicates_mask[:,duplicate_car] # duplicates_mask形状B，num_car
-                        # tem_next_ptr2[:,duplicate_car]=tem_next_ptr2[:,duplicate_car]* torch.logical_not(mask_car)+new_ptr*mask_car
-                        # tem_next_logp2[:,duplicate_car]=tem_next_logp2[:,duplicate_car]* torch.logical_not(mask_car) +new_logp*mask_car
-                        tem_next_ptr[duplicate_car]=tem_next_ptr[duplicate_car]* torch.logical_not(mask_car)+new_ptr*mask_car# todo 完了检查mask有没有detach
-                        # # tem_next_ptr[duplicate_car][batch_id]=new_ptr # 就是这行赋值导致的出错
-                        # tem_next_logp[duplicate_car][batch_id]=new_logp # todo 难道是这里导致了梯度清零吗
-                        tem_next_logp[duplicate_car]=tem_next_logp[duplicate_car]* torch.logical_not(mask_car) +new_logp*mask_car
-                    if tem_count > 100:
-                        print("row_ptr修改后：", tem_next_ptr)
+                # 更新动态信息，传递最后一个访问的点
+                #  # B 2 L 这里还是【当前小车】的load和当前小车的新一步action，更新地图里的load和demand
+                dynamic, next_dis = self.update_fn(self.depot_num, self.car_load, dynamic, distance, action.data,
+                                         ptr_tw)
 
-                # todo :把tem_next_ptr2的维度改回来………………？？？
-                duplicates_mask = self.get_duplicate_mask(tem_next_ptr,tem_next_logp) # 刷新重复元素
-            # ---------处理冲突结束----------------
+                if debug_gpu:
+                    torch.cuda.empty_cache()  # 使用memory_allocated前先清空一下cache
+                    allocated = torch.cuda.memory_allocated()
+                    reserved = torch.cuda.memory_reserved()
+                    print("----8-----------------------------------------------")
+                    print(f"已分配显存:{allocated / (1024** 2)} MB")
+                    print(f"保留显存:{reserved / (1024 ** 2)}MB")
 
-            # -------------for every uav循环：储存本轮的访问计划、更新地图-----------------
-            for car_id in range(self.depot_num):
-                # 读取当前位置；更新dynamic；保存现在的load；换成下一个车的load；更新isdone；（ptr和logp保存过了）；更新下一车ptr
-                # 选择好了下一个访问的点，访问，更新动态信息。
-                if self.update_fn is not None:
-                    last_visited = tour_idx[car_id][-1] # 获取当前位置
-                    # 获得下一步的点（已解决冲突）
-                    ptr = tem_next_ptr[car_id].clone().detach()  # 无人机下一步去往的id
-                    # 把本uav的load装进dynamic
-                    dynamic=dynamic.clone() #(B,2,num_node) 【反向传播应该没问题，就是这样的。】
-                    dynamic[:, 0] = car_load[car_id].unsqueeze(1).expand(-1, num_nodes)
+                # 新增===dynamic中的旧load储存，更新新load。所以此后dynamic都是当前无人机访问下一个点后的新环境
+                # car_load[car_id] = dynamic[:, 0, 0].clone()  # 随便取第一个仓库的load就好了，存到car_load数组里面
+                # ----------TW start--------------
+                for b in range(batch_size):
+                    # car_load_tw[b][car_id_tw[b]]=dynamic[b, 0, 0].clone()
+                    car_load_tw[b][car_id_tw[b]] = dynamic[b, 0, 0].item()
+                # ----------TW end--------------
 
-                    # 更新dynamic。B 2 L 这里还是当前车的load和新一步ptr，更新地图里的load和demand
-                    dynamic = self.update_fn(self.depot_num, self.car_load, dynamic, distance, ptr.data,
-                                             last_visited)
+                # 意思应该是batch里面有些情况下，已经遍历完了，就让车强制留在仓库）
+                is_done = dynamic[:, 1].sum(1).eq(0).float()  # 如果所有点的需求加和=0，就说明done
+                logp = logp * (1. - is_done)  # 如果完成了，logp 也是0, 梯度就不会更新了
 
-                    # dynamic中的旧load储存，更新新load。所以此后dynamic都是当前无人机访问下一个点后的新环境
-                    car_load[car_id] = dynamic[:, 0, 0].clone().detach()  # 随便取第一个仓库的load就好了，存到car_load数组里面。
+                # todo--------------此处插入next car id 更新--------------------------
+                self.update_task_complete_order(car_seq_order, next_dis) # todo 还得加上充电桩充电时间。(目前是is depot*0.1）
+                next_car_id = self.get_next_car_id(car_seq_order)# 更新。
+                # todo--------------此处插入next car id 更新--------------------------
 
-                    # 意思应该是batch里面有些情况下，已经遍历完了，就让车强制留在仓库）
-                    is_done = dynamic[:, 1].sum(1).eq(0).float()  # 如果所有点的需求加和=0，就说明done
-                    logp= tem_next_logp[car_id]
-                    logp = logp * (1. - is_done)  # 如果完成了，logp 也是0, 梯度就不会更新了
+                if debug_gpu:
+                    torch.cuda.empty_cache()  # 使用memory_allocated前先清空一下cache
+                    allocated = torch.cuda.memory_allocated()
+                    reserved = torch.cuda.memory_reserved()
+                    print("----9-----")
+                    print(f"已分配显存:{allocated / (1024** 2)} MB")
+                    print(f"保留显存:{reserved / (1024 ** 2)}MB")
 
-                    tour_logp.append(logp.unsqueeze(1))  # 每个时间t都要储存：因为为了计算整条路径出现的概率. T B 1
-                    tour_idx[car_id].append(ptr.data.unsqueeze(1))  # T B 1 把当前无人机的新访问的点保存起来。
+                # 替换dynamic里的load！把load换成下一个无人机的load，但demand继承。
+                # dynamic[:, 0] = car_load[(car_id + 1) % self.depot_num].unsqueeze(1).expand(-1, num_nodes)
+                # ----------TW start--------------
+                for b in range(batch_size):
+                    dynamic[b, 0] = torch.tensor(car_load_tw[b][next_car_id[b]]).unsqueeze(0).expand(num_nodes)
+                    # todo 已修改
+                # ----------TW end--------------
+
+
+
+            tour_logp.append(logp.unsqueeze(1))  # 每个时间t都要储存：因为为了计算整条路径出现的概率. T B 1 # todo 似乎不用变。但是之后uav goal就要了。
+
+            if debug_gpu:
+                torch.cuda.empty_cache()  # 使用memory_allocated前先清空一下cache
+                allocated = torch.cuda.memory_allocated()
+                reserved = torch.cuda.memory_reserved()
+                print("----10----")
+                print(f"已分配显存:{allocated / (1024 ** 2)} MB")
+                print(f"保留显存:{reserved / (1024 ** 2)}MB")
+
+
+            # tour_idx[car_id].append(action.data.unsqueeze(1))  # T B 1 把当前无人机的新访问的点保存起来。
+            # ----------TW start--------------
+            for b in range(batch_size):
+                tour_idx_tw[b][car_id_tw[b]].append(action[b].item())  # B T 1 把当前无人机的新访问的点保存起来。
+            # print(f"tour_idx_tw={tour_idx_tw}") # todo 已修改.
+            # ----------TW end--------------
+
+            # ptr = tour_idx[(car_id + 1) % self.depot_num][-1].clone().detach()  # 取出下一台无人机所在的点。
+            # ----------TW start--------------
+            # ptr_tw = tour_idx_tw[next_car_id][-1].clone().detach()  # 取出下一台无人机所在的点。
+            # ptr_tw = torch.tensor([tour_idx_tw[b][next_car_id[b].item()][-1]for b in range(batch_size)],
+            #                       dtype=torch.int64).unsqueeze(1) # 取出下一台无人机所在的点
+            # print(f"下一辆车ptr_tw={ptr_tw}")
+            # todo 已修改：直接在这里吧next car id给 car id，然后开头写ptr的赋值语句了。
+            # ----------TW end--------------
+
+            if debug_gpu:
+                torch.cuda.empty_cache()  # 使用memory_allocated前先清空一下cache
+                allocated = torch.cuda.memory_allocated()
+                reserved = torch.cuda.memory_reserved()
+                print("----11-----")
+                print(f"已分配显存:{allocated / (1024 ** 2)} MB")
+                print(f"保留显存:{reserved / (1024 ** 2)}MB")
+
+            # 车辆序号更新
+            # car_id = (car_id + 1) % self.depot_num
+            # ----------TW start--------------
+            car_id_tw = next_car_id # todo 修改完毕。但是其实应该提前
+            # ----------TW end--------------
+
 
         else:
             print(f"达到最大迭代次数{max_steps}退出")
 
+        if debug_batch:
+            print(f"总消耗step= {step}")
 
         if (dynamic[:,1,:]>0).any():# 如果仍然有需求
-            a=torch.nonzero(dynamic[:,1,:])
-            print(a)
-            raise ValueError("仍然有需求尚未满足：",a)
-        else:
-            # print("完成所有需求。")
-            pass
+            raise ValueError("仍然有需求尚未满足")
 
         # tour_idx 大小：最外层是list，包含num depot 个元素，每个元素是batch*无人机飞行过node个数。
-        tour_idx = [torch.cat(tour_idx[i], dim=1) for i in range(self.depot_num)]  # 包含了每一辆无人机的轨迹
-        tour_logp = torch.cat(tour_logp, dim=1)  # (batch_size, seq_len)
-        return tour_idx, tour_logp
+        # tour_idx = [torch.cat(tour_idx[i], dim=1) for i in range(self.depot_num)]  # 包含了每一辆无人机的轨迹 # todo 修改格式
+        tour_logp = torch.cat(tour_logp, dim=1)  # (batch_size, seq_len) # todo 似乎不用变。但是之后uav goal就要了。
+        # ----------TW start--------------
+        # 现在的tour_idx_tw是B，depot_num 的嵌套list (而且大家的tour长度不一样……）
+        tour_per_uav=[]
+        for i in range(self.depot_num):
+            uav_tour=[tour_idx_tw[b][i] for b in range(batch_size)]
+            max_len=max([len(i) for i in uav_tour])
 
-    def get_next_ptr_by_mask(self, row_ptr, duplicates_mask, car_id, mask_home, probs_home, batch_id,tour_list):
+            for tour in uav_tour: # 处理长度吧……????
+                tour+=(max_len-len(tour))*tour[-1:]
+            tour_per_uav.append(torch.tensor(uav_tour).to(dynamic.device))
+        # ----------TW end--------------
+
+        return tour_per_uav, tour_logp
+
+
+    def get_init_order(self,batch_size,car_num):
         '''
-        在这里面更新mask、、、结合原始的probs分布重新选一个点？
-        mask:旧的mask【看来又要mask home了或者时间换空间
-        返回值：最新的单个batch、单个飞机的ptr和logp
+        返回长度为batch size的list，内部元素是car_num个（id,timestamp)的列表
         '''
-        probs=probs_home[car_id][batch_id].clone() # (num_node,)
-        mask=mask_home[car_id][batch_id].clone() # 目前这是一个元素……# # (num_node,)
+        a=[[(i,0) for i in range(car_num)] for _ in range(batch_size)]
 
-        # 用旧的mask叠加现在新的需要mask掉的重复点。
-        duplicates_mask_row = duplicates_mask[batch_id]  # duplicates_mask True为重复元素
-        visited_id = row_ptr[torch.logical_not(duplicates_mask_row)]  # 标记处那些点是非重复元素。（把非重复元素作为访问过的点，mask掉，
-        mask[visited_id] = False  # 把其他人访问过的改为False
+        return a
 
-        if not mask.byte().any():   # 是因为在最后阶段，，其他点都被访问了，所以不得不【留在仓库】
-            current_pos = tour_list[car_id][-1][batch_id].clone().detach()  # 当前所在id
-            mask[current_pos]=True
-
-        if not mask.byte().any():  # 如果全mask掉了就退出
-            raise ValueError(f"not mask.byte().any() in get_next_ptr()：{mask}")
-
-        probs = F.softmax(probs + mask.log(), dim=0)
-        # probs = F.softmax(probs, dim=1) + mask.log() # fixme ？？？？？？？有没有更合理的？不知道如果使用这种会怎么样……
-
-        if self.training:
-
-            try:
-                m = torch.distributions.Categorical(probs)
-            except:
-                raise ValueError("Error: m = torch.distributions.Categorical(probs)")
-            ptr = m.sample()  # 根据上面的概率分布，采样一个点。大小B
-
-            while not torch.gather(mask, 0, ptr.data.unsqueeze(0)).byte().all():
-                ptr = m.sample()
-
-            logp = m.log_prob(ptr)  # 记录这个点的概率……todo 还有一个不合理的地方是：这个去的logp不是旧的probs的logp……呃呃！
-
-        else:
-            # prob, ptr = torch.max(probs, 1)  # Greedy
-            prob, ptr = torch.max(probs,0)
-            logp = prob.log()  # 1
-            # print(f"self.test in get_next_ptr_by_mask choose {ptr} with prob {prob}")
-
-        return ptr,logp
-
-    def get_next_ptr_by_mask2_whole(self, ptr_matrix, duplicates_mask, car_id, mask_home, probs_home, tour_list):
+    def get_next_car_id(self,task_complete_order)-> list:
         '''
-        比起旧的函数，只是多了一个B的维度……
-        使用新mask结合原始的probs分布重新选一个点
-        mask:旧的mask
-        返回值：最新的【整个】batch、【所有】飞机的ptr和logp
+        按照完成任务的顺序排序，返回下一个完成任务、需要进行动作决策的无人机id。
+        返回值：无人机id,大小为(B,1)的 list
+        task_complete_order: 完成当前任务的顺序 list B：[list[tuple(car_id,finish_timestamp)]：car_num]
         '''
-        probs = probs_home[car_id].clone()  # (B,num_node)
-        mask = mask_home[car_id].clone()  # # (B,num_node)
-        ptr_matrix_tran = torch.stack(ptr_matrix).detach()  # tensor(B,num_depot)
-        # 用旧的mask叠加现在新的需要mask掉的重复点。……todo 烦死了必须要按行遍历batch……
-        for batch_id in range(probs.size(0)):
-            if not duplicates_mask[batch_id].any():
-                continue
-            # print(f"batch_id={batch_id}")
-            duplicates_mask_row = duplicates_mask[batch_id]  # duplicates_mask True为重复元素
-            row_ptr=ptr_matrix_tran[:,batch_id].clone().detach() # todo ??应该要detach吧？
-            visited_id = row_ptr[torch.logical_not(duplicates_mask_row)]  # 标记处那些点是非重复元素。（把非重复元素作为访问过的点，mask掉，
-            mask[batch_id][visited_id] = False  # 把其他人访问过的改为False
+        # o = torch.tensor([order[0][0] for order in task_complete_order]).unsqueeze(1)
+        o = [order[0][0] for order in task_complete_order]
+        return  o # 每个batch的第一个无人机的编号
 
-            if not mask[batch_id].byte().any():  # 是因为在最后阶段，，其他点都被访问了，所以不得不【留在仓库】
-                current_pos = tour_list[car_id][-1][batch_id].clone().detach()  # 当前所在id
-                mask[batch_id][current_pos] = True
+    def update_task_complete_order(self,order, next_point_dis):
+        '''
+        order：(B,CAR_NUM)的列表，元素是二元组。
+        next_point_dis:去往下一个点的距离list (B,1) todo到时候是tensor怎么办？   (B,)也行但是函数要改一下
+        '''
+        # 根据刚刚选择的点，更新时间戳。(直接把所需要的时间叠加到原来的时间上就可得到timestamp
+        for sample,dis in zip(order,next_point_dis):
+            next_car=sample.pop(0)
+            sample.append((next_car[0],next_car[1]+dis)) # todo ：修改了：使用item
+            # # 排序
+            sample.sort(key=lambda tup: tup[1])  # sorts in place
+        # print("order",order)
+        return order
 
-            if not mask[batch_id].byte().any():  # 如果全mask掉了就退出
-                raise ValueError(f"not mask[{batch_id}].byte().any() in get_next_ptr()：{mask}")
-
-        probs = F.softmax(probs + mask.log(), dim=1) # (B,num_node)
-        # probs = F.softmax(probs, dim=1) + mask.log() # fixme ？？？？？？？有没有更合理的？不知道如果使用这种会怎么样……
-
-        if self.training:
-            try:
-                m = torch.distributions.Categorical(probs)
-            except:
-                raise ValueError("Error: m = torch.distributions.Categorical(probs)")
-            ptr = m.sample()  # 根据上面的概率分布，采样一个点。大小B
-
-            while not torch.gather(mask, 1, ptr.data.unsqueeze(1)).byte().all(): # todo 这个dim要修改吗
-                ptr = m.sample()
-
-            logp = m.log_prob(ptr)  # 记录这个点的概率……todo 还有一个不合理的地方是：这个去的logp不是旧的probs的logp……呃呃！
-
-        else:
-            # prob, ptr = torch.max(probs, 1)  # Greedy
-            prob, ptr = torch.max(probs, 1)
-            logp = prob.log()  # 1
-            # print(f"self.test in get_next_ptr_by_mask choose {ptr} with prob {prob}")
-
-        return ptr, logp
-
-    def get_duplicate_mask(self,next_ptr_matrix, next_logp_matrix):
-
-        next_ptr_matrix = torch.transpose(torch.stack(next_ptr_matrix), 1, 0).detach()  # tensor(B,num_depot) # todo 修好了之后把中间变量去掉。
-        next_logp_matrix = torch.transpose(torch.stack(next_logp_matrix), 1, 0).detach()  # tensor(B,num_depot)
-
-        # 创建一个和 tensor 同样大小的布尔 tensor，
-        duplicates_mask = torch.zeros_like(next_ptr_matrix, dtype=torch.bool)
-        for i in range(next_ptr_matrix.size(0)):
-            ptr_row = next_ptr_matrix[i]
-            logp_row = next_logp_matrix[i]
-            unique_elements, counts = torch.unique(ptr_row, return_counts=True)  # 统计每行元素的出现次数
-            duplicate_elements = unique_elements[counts > 1]  # 找到重复的元素 (出现次数大于 1)
-            for element in duplicate_elements:  # 对于每一种重复元素，标记为 True
-                duplicates_this_num = (ptr_row == element)  # 找到本重复元素
-                max_logp = torch.max(logp_row[duplicates_this_num])  # 最大的logp
-                max_logp_car = (logp_row == max_logp) & duplicates_this_num  # 找到最大元素的位置 （bool）
-                if sum(max_logp_car) != 1:
-                    max_logp_car[max_logp_car.nonzero()[1:]] = False
-                duplicates_mask[i] = duplicates_mask[i] | (
-                        duplicates_this_num & (torch.logical_not(max_logp_car)))  # 只有logp并非最大且重复元素需要True
-
-        return duplicates_mask
 
 """##vrp.py
 VehicleRoutingDataset类在初始化时生成一系列随机的VRP实例，包括城市的位置、每个城市的需求量、车辆的最大载重量等。此外，它提供了__getitem__方法来获取单个VRP实例，以及update_mask和update_dynamic方法来更新在解决问题过程中的动态状态，如车辆的当前载重量和城市的剩余需求量。
@@ -550,7 +559,7 @@ class VehicleRoutingDataset(Dataset):
 
         # demands = torch.randint(1, self.max_demand + 1, dynamic_shape)
         # demands = demands / float(self.max_load)  # 取消归一化。
-        demands = torch.full(dynamic_shape, self.max_demand)
+        demands = torch.full(dynamic_shape, self.max_demand)  # todo 目前是固定值。是否要把这里的demand改成不同的？
 
         # # # 设置仓库的需求量为 0
         # for depot_idx in range(self.num_depots):
@@ -572,7 +581,7 @@ class VehicleRoutingDataset(Dataset):
 def node_distance_shared(static, num_depots):
     '''
    是【完全共享仓库】版本.（可以在别人的仓库充电、最终停放）
-    修改了：目前版本是返回【点a-点b-点b最【远】的仓库】因为存在最近仓库被占用的情况。
+    todo 修改了：目前版本是返回【点a-点b-点b最【远】的仓库】因为存在最近仓库被占用的情况。
     static的维度:应该是B，2，num_depots+num_city
     '''
     depot_positions = static[:, :, :num_depots]  # 维度应该是B，2，num_depots
@@ -598,7 +607,87 @@ def node_distance_shared(static, num_depots):
     return distances
 
 
-def update_mask_shared(num_depots, dynamic, distance, current_idx, car_id):
+# def update_mask_shared(num_depots, dynamic, distance, current_idx, car_id):
+#     """更新用于隐藏非有效状态的掩码。用于【共享仓库】的功能
+#
+#     参数
+#     ----------
+#     dynamic: torch.autograd.Variable 的大小为 (1, num_feats, seq_len)
+#     distance: 在这里是node distance 1函数给的距离矩阵。-1位置存放着每个点到其最近仓库的距离。
+#     chosen_idx:[非常重要] 是当前的无人机的坐标。需要根据当前坐标，mask下一个可能的点。（已经改名为current_idx）
+#     car_id:并没有用。只是为了对齐update_mask2_outside的参数。
+#     """
+#
+#     # 将浮点数转换为整数进行计算
+#     loads = dynamic.data[:, 0]  # (batch_size, seq_len)
+#     demands = dynamic.data[:, 1]  # (batch_size, seq_len)
+#     n2n2depot_dis = distance + distance[:, -1, :].unsqueeze(1)  # 节点之间的距离加上与最近仓库的距离。
+#     n2n2depot_dis = n2n2depot_dis[:, :-1, :]  # 第二维度的意思：前面的值是节点之间的距离加上与最近仓库的距离。
+#
+#     # 计算 current_idx 到仓库点的距离【注意：共享仓库】
+#     # depot_distances = distance[torch.arange(distance.size(0)), current_idx.squeeze(1), :num_depots]
+#     # 根据batch，取当前位置-其他所有点的距离。
+#     chosen_distance = n2n2depot_dis[torch.arange(distance.size(0)), current_idx.squeeze(1)]
+#     # chosen_distance[:, :num_depots] = depot_distances # 什么无效代码。
+#
+#     # 如果没有剩余的正需求量，我们可以结束行程。
+#     if demands.eq(0).all():  # 即所有batch的里面，地图里面每一个点都没有需求了. 外界检测到全0的mask会退出vrp流程。
+#         return demands * 0.
+#
+#     # 这个 demand ne 0 会筛选出：所有有需求的city+所有空的仓库节点
+#     #  第二项三项筛选出并且loads-chosen_distance需要大于0的city【虽然这一条会涉及到仓库，但是先假设后续会单独对仓库进行处理，这里怎么样都不管】
+#     new_mask = demands.ne(0) * demands.lt(loads - chosen_distance) * (loads - chosen_distance > 0)
+#
+#     # 我们应该避免连续两次前往仓库
+#     # at_depot = chosen_idx.ne(0)
+#     # if at_depot.any(): # 不在仓库的可以回去。
+#     #     new_mask[at_depot.nonzero(), 0] = 1.
+#     # if (~at_depot).any(): # 在仓库的不能继续访问仓库
+#     #     new_mask[(~at_depot).nonzero(), 0] = 0.
+#     ############################# 避免连续两次前往仓库（"如果在仓库，下一个就不可以访问任何仓库"）
+#     at_depot = current_idx < num_depots
+#     if at_depot.any():
+#         new_mask[at_depot.squeeze().nonzero(), :num_depots] = 0
+#
+#     ##############################
+#
+#     # ...除非我们在等待小批量中的其他样本完成
+#     # has_no_load = loads[:, 0].eq(0).float() # 仓库load=0 说明无人机归位。
+#     # has_no_demand = demands[:, 1:].sum(1).eq(0).float() # 这里的1要改/所有city都没有demand
+#     has_no_demand = demands[:, num_depots:].sum(1).eq(0).float()  # 所有city都没有demand，转1和0 【避免本无人机在仓库但是其他无人机还没回去）
+#
+#     # combined = (has_no_load + has_no_demand).gt(0) # combine zero：该样本有的 city有demand 并且 车load不等于0
+#     combined = has_no_demand.gt(0)  # combined应该是B 1 吧？
+#     if combined.any():  # 如果该batch里面存在city没有demand（也就是说有的batch结束了，需要让无人机允许留在原地）
+#         # 首先，我们将所有节点的掩码设置为0，防止访问
+#         # new_mask[combined.nonzero(), :] = 0.
+#         # 对于每个样本，如果它已经在仓库中，我们只允许它访问当前所在的仓库
+#         # for sample_idx in combined.nonzero().squeeze():
+#         for sample_idx in combined.nonzero():  # 找到全部无需求的batch id
+#             current_location = current_idx[sample_idx]  # 找到当前位置
+#             if current_location < num_depots:  # 如果当前在仓库
+#                 # 仅允许访问当前所在的仓库
+#                 # new_mask[combined.nonzero(), :] = 0.
+#                 new_mask[sample_idx, current_location] = 1.
+#             # else:
+#             #     # 如果不在仓库，但没有需求或者载重为0，则允许访问【demand不为0的仓库】
+#             #     #new_mask[sample_idx, :self.num_depots] = 1.
+#             #     new_mask[sample_idx * torch.ones_like(demands[sample_idx], dtype=torch.long), demands[sample_idx] != 0] = 1.
+#
+#     # 判断是否存在某一行的mask全为0 ####################
+#     all_zero_mask = (new_mask == 0).all(dim=1)
+#     if all_zero_mask.any():
+#         # 找到全为0的行的索引
+#         all_zero_index = all_zero_mask.nonzero(as_tuple=True)[0]
+#         # 检查是否是留在仓库。如果是留在城市就报错
+#         if any(current_idx[all_zero_index] >= num_depots):
+#             raise ValueError(f"uav {car_id} 留在原地:{current_idx[all_zero_index]}")
+#         # 将这些行中chosen_idx对应位置的mask设为1
+#         new_mask[all_zero_index, current_idx[all_zero_index]] = 1  # 因为存在最远的有需求的城市正好去不了的情况
+#
+#     return new_mask.float()
+
+def update_mask_shared_TW(num_depots, dynamic, distance, current_idx, car_id):
     """更新用于隐藏非有效状态的掩码。用于【共享仓库】的功能
 
     参数
@@ -622,7 +711,6 @@ def update_mask_shared(num_depots, dynamic, distance, current_idx, car_id):
     # chosen_distance[:, :num_depots] = depot_distances # 什么无效代码。
 
     # 如果没有剩余的正需求量，我们可以结束行程。
-
     if demands.eq(0).all():  # 即所有batch的里面，地图里面每一个点都没有需求了. 外界检测到全0的mask会退出vrp流程。
         return demands * 0.
 
@@ -679,7 +767,6 @@ def update_mask_shared(num_depots, dynamic, distance, current_idx, car_id):
 
     return new_mask.float()
 
-
 def update_dynamic_shared(num_depots, max_car_load, dynamic, distance, next_idx, current_idx):  # 加了参数：访问的前一个点。
     """
     用于更新当前地图的dynamic的函数。啊要用到distance是因为dynamic里面的load需要减去距离……
@@ -702,10 +789,11 @@ def update_dynamic_shared(num_depots, max_car_load, dynamic, distance, next_idx,
     load = torch.gather(all_loads, 1, next_idx.unsqueeze(1))  # 获得batch里每一个样本，下一个节点的load
     demand = torch.gather(all_demands, 1, next_idx.unsqueeze(1))  # 获得batch里每一个样本，下一个节点的demand
     distance_matrix = distance[:, :-1, :]  # 距离矩阵 取到-1是因为最后一个是“每个点到最远的仓库的距离
+    diff_distances = distance_matrix[
+        torch.arange(distance_matrix.size(0)), current_idx, next_idx.squeeze()].unsqueeze(1)
+
     # 在小批量中 - 如果我们选择访问一个城市，尽可能满足其需求量
     if visit.any():
-        diff_distances = distance_matrix[
-            torch.arange(distance_matrix.size(0)), current_idx, next_idx.squeeze()].unsqueeze(1)
 
         # 检查上一次选择的节点与这次选择的节点的差值
         check_load = load - demand - diff_distances
@@ -729,7 +817,7 @@ def update_dynamic_shared(num_depots, max_car_load, dynamic, distance, next_idx,
         # all_demands[visit_idx, 0] = -1. + new_load[visit_idx].view(-1) # 改了
 
     # -----------测试把上一个访问节点是仓库的时候，条件扩展为"当前访问节点可以是任何点（即允许连续两次访问仓库）
-    # 使用布尔索引来找出上一个访问的是仓库的样本
+    # 使用布尔索引来找出当先处在仓库的样本
     # is_depot = last_visited.lt(self.num_depots).to('cuda')
     depot_visited_idx = current_idx.lt(num_depots).to(dynamic.device)
 
@@ -738,7 +826,7 @@ def update_dynamic_shared(num_depots, max_car_load, dynamic, distance, next_idx,
     # 1，原始的visit idx是【数组下标】不是城市序号！！
     depot_visited_idx = depot_visited_idx.nonzero().squeeze()
 
-    # 使用布尔索引和高效的张量操作来更新all_demands
+    # 使用布尔索引和高效的张量操作来更新all_demands (标记仓库已经没有无人机了）
     # all_demands[depot_visited_idx.to('cuda'), last_visited.to('cuda')[depot_visited_idx]] = -1. #+ new_load[depot_visited_idx].reshape(-1,2)
     all_demands[depot_visited_idx.to(dynamic.device), current_idx.to(dynamic.device)[
         depot_visited_idx]] = -1.  # + new_load[depot_visited_idx].reshape(-1,2)
@@ -750,14 +838,18 @@ def update_dynamic_shared(num_depots, max_car_load, dynamic, distance, next_idx,
     #     all_demands[depot.nonzero().squeeze(), 0] = 0.
     if depot.any():
         # all_loads[depot.nonzero().squeeze()] = float(self.max_load)
-        all_loads[depot.nonzero().squeeze()] = float(max_car_load)
+        all_loads[depot.nonzero().squeeze()] = float(max_car_load) # 恢复电量……。orz
         depot_indices = next_idx[depot.squeeze()]
-        all_demands[depot.squeeze(), depot_indices] = 0.
+        all_demands[depot.squeeze(), depot_indices] = 0. # 标记为有无人机在此仓库
 
-    new_dynamic = torch.cat((all_loads.unsqueeze(1), all_demands.unsqueeze(1)), 1)
+    new_dynamic = torch.cat((all_loads.unsqueeze(1), all_demands.unsqueeze(1)), 1) # 拼成dynamic
     # return torch.tensor(tensor.data, device=dynamic.device)
     # 避免额外的计算开销和不必要的内存使用
-    return new_dynamic.clone().detach().to(device=dynamic.device)
+
+    task_time=torch.clamp(demand,min=0) + diff_distances
+    task_time = (task_time.squeeze() + depot*0.1).tolist() # todo 添加充电时间。现在是临时的值。
+
+    return new_dynamic.clone().detach().to(device=dynamic.device),task_time
 
 
 def node_distance_independent(static, num_depots):
@@ -787,11 +879,85 @@ def node_distance_independent(static, num_depots):
     return distances_between_node  # distances大小为 (betch_size,seq_len+1,seq_len).加上了最近仓库张量
 
 
-def update_mask_independent(num_depots, dynamic, n2n_distance, current_idx, car_id):
+# def update_mask_independent(num_depots, dynamic, n2n_distance, current_idx, car_id):
+#     """和上一个相比是只允许无人机返回自己的仓库。
+#
+#     dynamic: torch.autograd.Variable 的大小为 (1, num_feats, seq_len)
+#     n2n_distance：每两个点之间的距离。
+#     chosen_idx:[非常重要] 大小(B,1)是当前的无人机的坐标。需要根据当前坐标，mask下一个可能的点。
+#     """
+#     # 将浮点数转换为整数进行计算
+#     loads = dynamic.data[:, 0]  # (batch_size, seq_len)
+#     demands = dynamic.data[:, 1]  # (batch_size, seq_len)
+#
+#     '''
+#     9.28修改：这里只考虑mask city的逻辑：(就算是影响到仓库也没关系，后续会处理仓库进行覆盖。)
+#         找到当前的位置，并且取出当前点-所有点的距离+所有点回自己的仓库（已经给了carid）的距离
+#         （所以我需要node-node 矩阵就够了。因为可以转换成：D(当前点~所有点) +D(自己仓库~所有点)
+#     '''
+#     # n2n_distance 是维度为(B,node_num,node_num)的
+#     dis_cur2all = n2n_distance[torch.arange(n2n_distance.size(0)), current_idx.squeeze(1)]
+#     dis_depot2all = n2n_distance[torch.arange(n2n_distance.size(0)), car_id]  # 仓库id=当前car id
+#
+#     dis_cur2node2depot = dis_cur2all + dis_depot2all  # D(当前点~所有点) +D(自己仓库~所有点) 总距离
+#
+#     # 如果没有剩余的正需求量，我们可以结束行程。
+#     if demands.eq(0).all():  # 即所有batch的里面，地图里面每一个点都没有需求了：
+#         return demands * 0.
+#
+#     # 这个 demand ne 0 会筛选出：所有有需求的city+所有空的仓库节点
+#     # 第二项三项筛选出并且loads-chosen_distance-demand大于0的city【虽然这一条会涉及到仓库，但是先假设后续会单独对仓库进行处理，这里怎么样都不管】
+#     new_mask = demands.ne(0) * demands.lt(loads - dis_cur2node2depot) * (loads - dis_cur2node2depot > 0)
+#
+#     ##############################
+#     # 9.28修改方案：任何时刻兜底把所有仓库mask掉.
+#     new_mask[:, :num_depots] = 0
+#     # 然后判断让不在仓库的可以回到自己的仓库。
+#     in_city = (current_idx >= num_depots)
+#     new_mask[in_city.squeeze(), car_id] = 1 # todo ????????记得检查??????????????????????
+#
+#     # ...除非我们在等待小批量中的其他样本完成
+#     # has_no_load = loads[:, 0].eq(0).float() # 仓库load=0 说明无人机归位。
+#     # has_no_demand = demands[:, 1:].sum(1).eq(0).float() # 这里的1要改/所有city都没有demand
+#     has_no_demand = demands[:, num_depots:].sum(1).eq(0).float()  # 所有city都没有demand，转1和0 【避免本无人机在仓库但是其他无人机还没回去）
+#
+#     # combined = (has_no_load + has_no_demand).gt(0) # combine zero：该样本有的 city有demand 并且 车load不等于0
+#     combined = has_no_demand.gt(0)  # combined应该是B 1 吧？
+#     if combined.any():  # 如果该batch里面存在city没有demand（也就是说有的batch结束了，需要让无人机允许留在原地）
+#         # 首先，我们将所有节点的掩码设置为0，防止访问
+#         # new_mask[combined.nonzero(), :] = 0.
+#         # 对于每个样本，如果它已经在仓库中，我们只允许它访问当前所在的仓库
+#         # for sample_idx in combined.nonzero().squeeze():
+#         for sample_idx in combined.nonzero():  # 找到全部无需求的batch id
+#             current_location = current_idx[sample_idx]  # 找到当前位置
+#             if current_location < num_depots:  # 如果当前在仓库
+#                 # 仅允许访问当前所在的仓库
+#                 # new_mask[combined.nonzero(), :] = 0.
+#                 new_mask[sample_idx, current_location] = 1.
+#             # else:
+#             #     # 如果不在仓库，但没有需求或者载重为0，则允许访问【demand不为0的仓库】
+#             #     #new_mask[sample_idx, :self.num_depots] = 1.
+#             #     new_mask[sample_idx * torch.ones_like(demands[sample_idx], dtype=torch.long), demands[sample_idx] != 0] = 1.
+#
+#     # 判断是否存在某一行的mask全为0####################
+#     all_zero_mask = (new_mask == 0).all(dim=1)
+#     if all_zero_mask.any():
+#         # 以下是打底的补丁，无补丁会报错【因为存在最远的有需求的城市正好去不了的情况】
+#         # 找到全为0的行的索引
+#         all_zero_indices = all_zero_mask.nonzero(as_tuple=True)[0]
+#         if any(current_idx[all_zero_indices] >= num_depots):  # 检查是否是留在仓库。如果是留在城市就报错（
+#             raise ValueError(f"uav {car_id} 留在城市:{current_idx[all_zero_indices]}")
+#
+#         # 将这些行中chosen_idx(当前位置即仓库位置？）对应位置的mask设为1
+#         new_mask[all_zero_indices, current_idx[all_zero_indices]] = 1
+#
+#     return new_mask.float()
+
+def update_mask_independent_TW(num_depots, dynamic, n2n_distance, current_idx, car_id):
     """和上一个相比是只允许无人机返回自己的仓库。
 
     dynamic: torch.autograd.Variable 的大小为 (1, num_feats, seq_len)
-    n2n_distance：每两个点之间的距离。
+    n2n_distance：每两个点之间的距离。(B,num_node,num_node0
     chosen_idx:[非常重要] 大小(B,1)是当前的无人机的坐标。需要根据当前坐标，mask下一个可能的点。
     """
     # 将浮点数转换为整数进行计算
@@ -805,7 +971,12 @@ def update_mask_independent(num_depots, dynamic, n2n_distance, current_idx, car_
     '''
     # n2n_distance 是维度为(B,node_num,node_num)的
     dis_cur2all = n2n_distance[torch.arange(n2n_distance.size(0)), current_idx.squeeze(1)]
-    dis_depot2all = n2n_distance[torch.arange(n2n_distance.size(0)), car_id]  # 仓库id=当前car id
+    # dis_depot2all = n2n_distance[torch.arange(n2n_distance.size(0)), car_id]  # 仓库id=当前car id
+    dis_depot2all2=[]
+    for b in range(n2n_distance.size(0)):
+        dis_depot2all2.append(n2n_distance[b, car_id[b]])
+
+    dis_depot2all=torch.stack(dis_depot2all2,dim=0) #tensor B,num_node
 
     dis_cur2node2depot = dis_cur2all + dis_depot2all  # D(当前点~所有点) +D(自己仓库~所有点) 总距离
 
@@ -822,7 +993,11 @@ def update_mask_independent(num_depots, dynamic, n2n_distance, current_idx, car_
     new_mask[:, :num_depots] = 0
     # 然后判断让不在仓库的可以回到自己的仓库。
     in_city = (current_idx >= num_depots)
-    new_mask[in_city.squeeze(), car_id] = 1
+    # new_mask[in_city.squeeze(), car_id] = 1 # todo 修改如下
+    for b in range(n2n_distance.size(0)):
+        if in_city[b]:
+            new_mask[b, car_id[b]] = 1
+
 
     # ...除非我们在等待小批量中的其他样本完成
     # has_no_load = loads[:, 0].eq(0).float() # 仓库load=0 说明无人机归位。
@@ -840,8 +1015,12 @@ def update_mask_independent(num_depots, dynamic, n2n_distance, current_idx, car_
             current_location = current_idx[sample_idx]  # 找到当前位置
             if current_location < num_depots:  # 如果当前在仓库
                 # 仅允许访问当前所在的仓库
-                new_mask[sample_idx, current_location] = 1. # 其实current_location等价于car id
-
+                # new_mask[combined.nonzero(), :] = 0.
+                new_mask[sample_idx, current_location] = 1.
+            # else:
+            #     # 如果不在仓库，但没有需求或者载重为0，则允许访问【demand不为0的仓库】
+            #     #new_mask[sample_idx, :self.num_depots] = 1.
+            #     new_mask[sample_idx * torch.ones_like(demands[sample_idx], dtype=torch.long), demands[sample_idx] != 0] = 1.
 
     # 判断是否存在某一行的mask全为0####################
     all_zero_mask = (new_mask == 0).all(dim=1)
@@ -858,7 +1037,7 @@ def update_mask_independent(num_depots, dynamic, n2n_distance, current_idx, car_
     return new_mask.float()
 
 
-def update_dynamic_independent(num_depots, max_car_load, dynamic, distance, next_idx, current_idx):  # 加了参数：访问的前一个点。
+def update_dynamic_independent(num_depots, max_car_load, dynamic, n2n_distance, next_idx, current_idx):  # 加了参数：访问的前一个点。
 
     """
     这是用于更新当前地图的dynamic的函数。此函数用于【非共享仓库】。
@@ -877,54 +1056,65 @@ def update_dynamic_independent(num_depots, max_car_load, dynamic, distance, next
     all_demands = dynamic[:, 1].clone()
     load = torch.gather(all_loads, 1, next_idx.unsqueeze(1))  # 获得batch里每一个样本，下一个节点load【实际含义是当前carload】
     demand = torch.gather(all_demands, 1, next_idx.unsqueeze(1))  # 获得batch里每一个样本，下一个节点的demand
-    n2n_distance = distance
+    #n2n_distance = distance
+    distance = n2n_distance[  # 取对应batch的对应两点间的距离值（毕竟只要减去两个点之间的真实距离，无需考虑仓库距离。
+        torch.arange(n2n_distance.size(0)), current_idx, next_idx.squeeze()].unsqueeze(1)
+
     # 在batch中 - 如果我们下一个点选择访问一个城市：
     if visit.any():
-        distance = n2n_distance[  #取对应batch的对应两点间的距离值（毕竟只要减去两个点之间的真实距离，无需考虑仓库距离。
-            torch.arange(n2n_distance.size(0)), current_idx, next_idx.squeeze()].unsqueeze(1)
         # 上一次选择的节点与这次选择的节点的差值
         check_load = load - demand - distance
         if (check_load < 0).any():
-            print("check_load",check_load)
+            print(check_load)
             raise ValueError("Error: 存在负载为负数.")
 
         new_load = torch.clamp(check_load, min=0)  # 当前负载-下一个点需求-路程损耗
+        del check_load # todo 新增解决OOM
 
-        check_demand =demand - load+distance # 下一个点需求减去车辆走路后的负载。
+        check_demand = demand - load+distance # 下一个点需求减去车辆走路后的负载。
         if (check_demand>0).any():
             raise ValueError("Error:无法满足下一个城市的需求。") # 注意只有需求无法分割的时候，这个报错才是必要的
         new_demand = torch.clamp(check_demand, min=0)
-
+        del check_demand  # todo 新增解决OOM
         # 将载重量广播到所有节点，但单独更新需求量
         visit_idx = visit.nonzero().squeeze()
+        del visit # todo 新增解决OOM
 
         all_loads[visit_idx] = new_load[visit_idx]
         all_demands[visit_idx, next_idx[visit_idx]] = new_demand[visit_idx].view(-1)
+        del new_load # todo 新增解决OOM
+        del new_demand # todo 新增解决OOM
 
-    #  dynamic会标记仓库是非空（-1空、0非空），所以update的时候，如果无人机离开仓库（当前点=仓库），就要更新该仓库demand为
-    #  注意，认为飞机【已经去了】下一个节点 next_idx。所以下一个节点的需求、飞机的load也要根据节点类型而更新。
+    #  dynamic会标记仓库是非空（-1空、0非空），所以update的时候，如果无人机离开仓库（当前点=仓库），就要更新该仓库demand
+    #  注意，本质上我们认为飞机【已经去了】下一个节点 next_idx。所以下一个节点的需求、飞机的load也要根据节点类型而更新。
     # 使用布尔索引来找出当前节点的是仓库的样本
-    depot_visited = current_idx.lt(num_depots).to(dynamic.device)
+
+    # depot_visited = # todo 压缩，解决OOM
 
     # depot_visited_idx是【数组下标】不是城市序号！！
-    depot_visited_idx = depot_visited.nonzero().squeeze()
+    depot_visited_idx = current_idx.lt(num_depots).to(dynamic.device).nonzero().squeeze()
 
-    # 使用布尔索引操作来更新all_demands【把当前节点是depot的样本，的对应depot的demand更新为-1】
+    # 使用布尔索引和高效的张量操作来更新all_demands【意思是：把当前节点是depot的样本，的对应depot的demand更新为-1
     # all_demands[depot_visited_idx.to('cuda'), last_visited.to('cuda')[depot_visited_idx]] = -1. #+ new_load[depot_visited_idx].reshape(-1,2)
     all_demands[depot_visited_idx.to(dynamic.device), current_idx.to(dynamic.device)[
         depot_visited_idx]] = -1.  # + new_load[depot_visited_idx].reshape(-1,2)
 
-    # 在batch中 - 如果我们下一个选择访问一个仓库，则load回满，仓库的demand标记为0
+    del depot_visited_idx # todo 新增解决OOM
+    # 在batch中 - 如果我们下一个选择访问一个仓库，则load回满，仓库的deman标记为0
     # if depot.any():
     #     all_loads[depot.nonzero().squeeze()] = 1.
     #     all_demands[depot.nonzero().squeeze(), 0] = 0.
     if depot.any():
+        # todo 查看一下如果下一个点是depot，demand是不是-1，如果是的话，这里就有bug了。。。。。【完了还真是
         all_loads[depot.nonzero().squeeze()] = float(max_car_load)  # 恢复满格
         all_demands[depot.squeeze(), next_idx[depot.squeeze()]] = 0.
 
     # 把load和demand拼接会dynamic
     new_dynamic = torch.cat((all_loads.unsqueeze(1), all_demands.unsqueeze(1)), 1)
-    return new_dynamic.clone().detach().to(device=dynamic.device)  # 避免额外的计算开销和不必要的内存使用
+
+    task_time = ((torch.clamp(demand,min=0) + distance).squeeze() + depot*0.1).tolist() # todo 添加充电时间。现在是临时的值。
+    del distance  # todo 新增解决OOM
+    return new_dynamic.clone().detach().to(device=dynamic.device), task_time # 避免额外的计算开销和不必要的内存使用
 
 
 def reward(static, tour_indices):  # 这个是旧的reward，,depot_number参数没用
@@ -1165,7 +1355,7 @@ def validate(data_loader, actor, reward_fn, render_fn=None, save_dir='.',
 
         # 使用vrp奖励函数 reward_fn 计算预测的旅游索引的奖励。取奖励的均值，并使用 item() 提取标量值，添加到rewards列表中
         # reward = reward_fn(static, tour_indices).mean().item()
-        reward = reward_fn(static, tour_indices)  # 本batch的所有reward 列表 #
+        reward = reward_fn(static, tour_indices)  # 本batch的所有reward 列表 # todo 感觉画图的话要用到这里面的取数技巧。
         batch_reward_mean = reward.mean().item()  # 本batch的均值。
         # rewards.append(batch_reward_mean)
         rewards.extend(reward.tolist())
@@ -1192,7 +1382,7 @@ def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
     now = datetime.datetime.now()
     format_now = '%s' % now.month + "_" + '%s' % now.day + "_" + '%s' % now.hour + "_" + '%s' % now.minute + "_" + '%s' % now.second
 
-    save_dir = os.path.join(current_dir, task + "parallel_train_log(times)", '%d' % num_city, format_now)  # ./vrp/numnode/time
+    save_dir = os.path.join(current_dir, "TW_train_log_share_LRup", '%d' % num_city, format_now)  # ./vrp/numnode/time
     # 创建能够保存训练中checkpoint的文件夹
     checkpoint_dir = os.path.join(save_dir, 'train_checkpoints')  # /vrp/numnode/time/checkpoints
     if not os.path.exists(checkpoint_dir):
@@ -1213,7 +1403,7 @@ def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
         critic.train()
 
         # loss放每个batch的损失
-        times, losses, rewards, critic_rewards = [], [], [], []
+        times, losses, rewards = [], [], []
 
         epoch_start = time.time()
         start = epoch_start
@@ -1228,21 +1418,28 @@ def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
 
             # Full forward pass through the dataset(使用actor的前向传播)
             tour_indices, tour_logp = actor(static, dynamic, x0)  # 调用的是forward函数。
-
+            if debug_batch:
+                print("完成一个batch的前向传播")
             # Sum the log probabilities for each city in the tour(每个城市的对数几率和，作为真实奖励值)
             reward = reward_fn(static, tour_indices) # (B,)
+            del tour_indices# todo 减少内存占用
+            torch.cuda.empty_cache()
 
             # Query the critic for an estimate of the reward(向评论家询问奖励的估计值)
-            critic_est = critic(static, dynamic).view(-1)  # (B,)
+            # critic_est = critic(static, dynamic).view(-1)  # (B,) # todo ：合并了减少内存。
             # 真实奖励值和估计奖励值的差，作为优势函数(这里是A2C中的advantage)
-            advantage = (reward - critic_est) # (B,)
+            advantage = (reward - critic(static, dynamic).view(-1) ) # (B,) # todo 我靠这个advantage公式到底是谁-谁
             # actor_loss是优势函数乘以演员的动作概率分布，这个乘积表示每个动作的优势加权的动作概率。然后取平均值作为演员的损失
             actor_loss = torch.mean(advantage.detach() * tour_logp.sum(dim=1)) # tour_logp:(B，路程长度）.之所以要sum是为了求路径出现概率
             # critic_loss是根据优势函数的平方误差计算的
-            critic_loss = torch.mean(advantage ** 2)
+            critic_loss = torch.mean(advantage ** 2) #  所以说其实critic 拟合的是Q(s,a)?
+
+            del advantage # todo 减少内存占用
+            torch.cuda.empty_cache()
+
             # 0梯度反向传播
             actor_optim.zero_grad()
-            actor_loss.backward()
+            actor_loss.backward() # todo 居然在这里OOM了
             # 对模型的梯度进行裁剪，以防止梯度爆炸问题
             torch.nn.utils.clip_grad_norm_(actor.parameters(), max_grad_norm)
             actor_optim.step()
@@ -1251,8 +1448,11 @@ def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
             critic_loss.backward()
             torch.nn.utils.clip_grad_norm_(critic.parameters(), max_grad_norm)
             critic_optim.step()
+            if debug_batch:
+                print("完成一个batch的反向传播")
+
             # 将奖励估计值，真实奖励值，actor损失平均求和后写入空列表中
-            critic_rewards.append(torch.mean(critic_est.detach()).item())
+            #critic_rewards.append(torch.mean(critic_est.detach()).item())# todo 似乎没用到，先注释掉。
             rewards.append(torch.mean(reward.detach()).item())
             losses.append(torch.mean(actor_loss.detach()).item())
 
@@ -1319,6 +1519,7 @@ def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
         critic_save_path = os.path.join(epoch_dir, 'critic.pt')  #./ vrp_numnode_time//checkpoints/0/critic.pt
         torch.save(critic.state_dict(), critic_save_path)
 
+
         # -------------------Valid------------------
         print(f"Train {epoch} ends. Start valid {epoch}.")
         valid_dir = os.path.join(save_dir, "valid_picture")  # test去掉后面的epoch
@@ -1381,7 +1582,7 @@ def run_RL_exp(share_depot, args):
                         car_load,
                         args.depot_num,
                         update_dynamic_shared,
-                        update_mask_shared,
+                        update_mask_shared_TW,
                         node_distance_shared,
                         args.num_layers,
                         args.dropout).to(device)
@@ -1393,7 +1594,7 @@ def run_RL_exp(share_depot, args):
                         car_load,
                         args.depot_num,
                         update_dynamic_independent,
-                        update_mask_independent,
+                        update_mask_independent_TW,
                         node_distance_independent,
                         args.num_layers,
                         args.dropout).to(device)
@@ -1412,6 +1613,8 @@ def run_RL_exp(share_depot, args):
 
     print(f"args.num_city={args.num_city}")
     print(f"args.depot_num={args.depot_num}")
+    print(f"actor_lr={args.actor_lr}")  # 学习率，现在在训练第4epoch，我手动改了一下
+    print(f"critic_lr={args.critic_lr}")
 
     if not args.test:
         # 生成随机训练数据集(1000000)，验证数据集(1000)
@@ -1458,7 +1661,7 @@ def run_RL_exp(share_depot, args):
     if share_depot:
         test_dir = 'test_picture_shared_depot'
     else:
-        test_dir = 'test_picture'
+        test_dir = '../时间窗口TW/test_picture'
 
     test_loader = DataLoader(test_data, args.batch_size, False, num_workers=0)
 
@@ -1504,9 +1707,11 @@ def run_multi_alg_test(share_depot, args, algorithm):
     # print('DRL:Average tour length in test set: ', test_out)
 
     algorithm_result={}
-    from Greedy_VRP_share import run_greedy_VRP
+
     # -----------------------------------------------------------------Greedy
     if "greedy" in algorithm or "Greedy" in algorithm:
+        from Greedy_VRP_share import run_greedy_VRP
+
         reward_greedy = run_greedy_VRP(test_data.static, args.num_city, args.depot_num,share=share_depot)
         algorithm_result["Greedy"]=reward_greedy
 
@@ -1521,7 +1726,7 @@ def run_multi_alg_test(share_depot, args, algorithm):
                             car_load,
                             args.depot_num,
                             update_dynamic_shared,
-                            update_mask_shared,
+                            update_mask_shared_TW,
                             node_distance_shared,
                             args.num_layers,
                             args.dropout).to(device)
@@ -1532,7 +1737,7 @@ def run_multi_alg_test(share_depot, args, algorithm):
                             car_load,
                             args.depot_num,
                             update_dynamic_independent,
-                            update_mask_independent,
+                            update_mask_independent_TW,
                             node_distance_independent,
                             args.num_layers,
                             args.dropout).to(device)
@@ -1544,7 +1749,7 @@ def run_multi_alg_test(share_depot, args, algorithm):
         if share_depot:
             test_dir = 'test_picture_shared_depot'
         else:
-            test_dir = 'test_picture'
+            test_dir = '../时间窗口TW/test_picture'
 
         test_loader = DataLoader(test_data, args.batch_size, False, num_workers=0)
 
@@ -1685,20 +1890,20 @@ if __name__ == '__main__':
     parser.add_argument('--checkpoint', default=None)
     parser.add_argument('--test', action='store_true', default=False)
     parser.add_argument('--task', default='vrp')
-    parser.add_argument('--nodes', dest='num_city', default=50, type=int)  #todo 对齐#########
+    parser.add_argument('--nodes', dest='num_city', default=200, type=int)  #todo 对齐#########
     # parser.add_argument('--actor_lr', default=5e-4, type=float)
     # parser.add_argument('--critic_lr', default=5e-4, type=float)
-    parser.add_argument('--actor_lr', default=1e-4, type=float)  # 学习率，现在在训练第4epoch，我手动改了一下
-    parser.add_argument('--critic_lr', default=1e-4, type=float)
+    parser.add_argument('--actor_lr', default=1e-3, type=float)  # 学习率，现在在训练第4epoch，我手动改了一下
+    parser.add_argument('--critic_lr', default=1e-3, type=float)
     parser.add_argument('--max_grad_norm', default=2., type=float)
     parser.add_argument('--batch_size', default=64, type=int)  #fixme#########################
     # parser.add_argument('--batch_size', default=8, type=int) ##########
     parser.add_argument('--hidden', dest='hidden_size', default=128, type=int)
     parser.add_argument('--dropout', default=0.1, type=float)
     parser.add_argument('--layers', dest='num_layers', default=1, type=int)
-    parser.add_argument('--train-size', default=1000000, type=int)  #fixme!!!!!!!!!!!!
+    parser.add_argument('--train-size', default=100000, type=int)  #fixme!!!!!!!!!!!!
     parser.add_argument('--valid-size', default=1000, type=int)
-    parser.add_argument('--depot_num', default=5, type=int)  # todo ###############
+    parser.add_argument('--depot_num', default=20, type=int)  # todo ###############
 
     # 解析为args
     args = parser.parse_known_args()[0]  # colab环境跑使用
@@ -1706,31 +1911,23 @@ if __name__ == '__main__':
     args.test = False
     # --------------------------------------------------------------------
     # 设置checkpoint路径
-    share = False         # todo 检查#############
-    # if share:
-    #     args.checkpoint = os.path.join("trained_model", "total_shared_w200")
-    # else:
-    #     # args.checkpoint = os.path.join("trained_model", "trained_w200")
-    #     args.checkpoint = os.path.join("vrpparallel_train_log", "50","11_22_11_17_8")# 服务器训练用。
+    share = False          # todo 检查#############
 
+    if share:
+        # args.checkpoint = os.path.join("../","TW","TW_train_log_share_LRup","50","2_5_20_12_28")
+        args.checkpoint ="?"
+    else:
+        args.checkpoint = os.path.join("../", "TW", "TW_train_log_LRup", "50", "2_5_18_46_16")
 
-    print("---------这是同时决策版本 py---------")
-    # todo 关于bug：
-    #  注意last hh是否有问题、冲突解决的地方是否有错误。【是不是应该把没量无人机的last hh存起来？但是不解决冲突版本也没有这样】
-    # todo ：其他改进方案：输入编码器的静态信息只能是本无人机的xy吗？能不能加入其他无人机的xy？【太复杂的话是不是还要把网络加深】
+    # todo 【时间窗】：现在无人机时间没有按照顺序来。（若巡检时间固定，在本塔巡检完之后，锁定下一个，飞过去，计算飞过去的时间，排决策顺序）
+    # todo:  抢夺决策？？？怎么写实现：1，获取所有无人机下一步的距离（已经确定可行）然后按照距离执行（？会重复吧喂）
 
-    import time
-    # 开始计时
-    start_time = time.time()
-    reward_rl=run_RL_exp(share, args)
+    reward_rl=run_RL_exp(share, args) # todo 注意update mask 在run multi test 里面还没有改函数引用。
     mean_rl = np.mean(reward_rl)
     print('DRL:Average tour length in test set: ', mean_rl)
     #--------------------------------------------------------------
+
     # test_generalization_uav_change(shared=share, run_alg_name=["RL","Greedy"])
     # test_generalization_tower_change(share=share,run_alg_name=["Greedy","RL"])
-    # 结束计时
-    end_time = time.time()
-    # 计算并打印执行时间
-    print(f"执行时间：{end_time - start_time}秒")
     print("Running ends.")
 

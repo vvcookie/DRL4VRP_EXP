@@ -1408,7 +1408,7 @@ def run_RL_exp(share_depot, args):
     if share_depot:
         test_dir = 'test_picture_shared_depot_PG'
     else:
-        test_dir = 'test_picture_PG'
+        test_dir = '../test_picture_PG'
 
     test_loader = DataLoader(test_data, args.batch_size, False, num_workers=0)
 
@@ -1492,9 +1492,9 @@ def run_multi_alg_test(share_depot, args, algorithm):
         actor.load_state_dict(torch.load(path, device))  # load_state_dict：加载模型参数
 
         if share_depot:
-            test_dir = 'test_picture_shared_depot'
+            test_dir = '../test_picture_shared_depot'
         else:
-            test_dir = 'test_picture'
+            test_dir = '../test_picture'
 
         test_loader = DataLoader(test_data, args.batch_size, False, num_workers=0)
 
@@ -1528,10 +1528,10 @@ def test_generalization_uav_change(shared, run_alg_name):
     args = parser.parse_known_args()[0]  # colab环境跑使用
 
     if shared:
-        args.checkpoint = os.path.join("trained_model", "total_shared_w200")
+        args.checkpoint = os.path.join("../trained_model", "total_shared_w200")
         # args.checkpoint = os.path.join("trained_model", "total_shared_w200_w250")
     else:  # not share
-        args.checkpoint = os.path.join("trained_model", "trained_w200")
+        args.checkpoint = os.path.join("../trained_model", "trained_w200")
     print("比较算法：",run_alg_name)
     reward_list_dict={}
 
@@ -1548,7 +1548,7 @@ def test_generalization_uav_change(shared, run_alg_name):
         plt.plot(uav_list, reward_list_dict[alg], label=f"{alg} average path")
     # plt.plot(uav_list, avg_R_Greedy, label="Greedy average path")
     plt.legend()
-    dir = os.path.join("generalization_test_picture")
+    dir = os.path.join("../generalization_test_picture")
     if not os.path.exists(dir):
         os.makedirs(dir)
     plt.savefig(os.path.join(dir, f"Greedy_VS_RL on {args.num_city} tower share={shared}.png"))
@@ -1590,9 +1590,9 @@ def test_generalization_tower_change(share,run_alg_name):
 
     args.test = True
     if share:
-        args.checkpoint = os.path.join("trained_model", "total_shared_w200")
+        args.checkpoint = os.path.join("../trained_model", "total_shared_w200")
     else:  # not share
-        args.checkpoint = os.path.join("trained_model", "trained_w200")
+        args.checkpoint = os.path.join("../trained_model", "trained_w200")
 
     # run_alg_name = ["Greedy", "RL"]
     print("比较算法：", run_alg_name)
@@ -1609,7 +1609,7 @@ def test_generalization_tower_change(share,run_alg_name):
     for alg in reward_list_dict.keys():
         plt.plot(tower_list, reward_list_dict[alg], label=f"{alg} average path")
     plt.legend()
-    dir = os.path.join("generalization_test_picture")
+    dir = os.path.join("../generalization_test_picture")
     if not os.path.exists(dir):
         os.makedirs(dir)
     share=str(share)

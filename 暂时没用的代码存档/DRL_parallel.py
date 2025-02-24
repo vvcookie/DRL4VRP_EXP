@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-# todo 此代码用于 优化目标为“一辆uav路径的长度”并且网络参数共享版本 + v2的同时决策。
+# todo "这是用于测试最原始的同时决策代码在100w的数据量情况下是否真的不会收敛。"】【确实不会收敛，废弃】
+
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "3" # todo 记得修改不同的gpu编号
 import time
@@ -11,7 +12,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
-print("此代码用于 优化目标为“一辆uav路径的长度”并且网络参数共享版本 + v2的同时决策。")
+print("这是最原始的同时决策代码,测试在100w的数据量情况下是否真的不会收敛。")
+
 # from Greedy_VRP import run_greedy_VRP
 if torch.cuda.is_available():  # 一定要放在import matplotlib.pyplot之前
     print("using cuda")
@@ -221,8 +223,7 @@ class DRL4TSP(nn.Module):
         # 给每个无人机tour里记录初始仓库。tour idx 的大小是num_car,tour length,B,
         tour_idx = [[torch.tensor(initial_depot[i][0]).unsqueeze(1).to(device)] for i in
                     range(self.depot_num)]  # num_car, 1, batch_size
-        #tour_logp = []# 最终的访问序列。
-        tour_logp =[[] for _ in range(self.depot_num)] # 为了把优化目标改为每个无人机的路径，需要添加维度
+        tour_logp = []# 最终的访问序列。
 
         # # ptr 大小B 1。
         # current_idx = tour_idx[0][-1].clone().detach()  # 当前第0辆无人机的位置。从第一辆无人机开始，取最后一个（其实只有一个元素）所在下标。
@@ -261,16 +262,17 @@ class DRL4TSP(nn.Module):
                     dynamic.device)).detach()
 
                 dynamic_hidden = self.dynamic_encoder(dynamic)  # 更新编码当前动态信息
-                decoder_hidden = self.decoder(decoder_input)  # 更新编码当前位置xy静态信息
-
+                decoder_hidden = self.decoder(decoder_input)  # 更新编码当前位置xy静态信息 todo 等debug完之后尝试使用“所有无人机的xy”
 
                 # 指针网络。里面包含GRU。
                 probs, last_hh = self.pointer(self.static_hidden, dynamic_hidden, decoder_hidden,
                                               last_hh)  # 得到下一个点的（未mask）概率分布和隐状态。
-
                 probs_home[car_id] = probs
                 mask_home[car_id] = mask
                 probs = F.softmax(probs + mask.log(), dim=1)  # mask操作+softmax Softmax的原因：因为π(a,s)是必须大于0的，用softmax把0映射成很小的数字
+
+                # print(f"probs require greadient:{probs.requires_grad}")  # True
+                # print(f"probs is leaf :{probs.is_leaf}")  # False【is_leaf 属性只有在需要求导的时候才有意义。】
 
                 if self.training:
                     try:
@@ -284,7 +286,7 @@ class DRL4TSP(nn.Module):
                     while not torch.gather(mask, 1, ptr.data.unsqueeze(1)).byte().all():
                         ptr = m.sample()
 
-                    logp = m.log_prob(ptr) # 记录这个点的概率……# 是因为在这里用ptr获得了logp，所以后续直接修改ptr会报错。
+                    logp = m.log_prob(ptr) # 记录这个点的概率……# todo 注意！！是因为在这里用ptr获得了logp，所以后续直接修改ptr会报错。
                 else:
                     prob, ptr = torch.max(probs, 1)  # Greedy
                     logp = prob.log()  # B,1
@@ -297,32 +299,43 @@ class DRL4TSP(nn.Module):
 
             # 快速跳转用
             # ---------处理冲突----------------
-                duplicates_mask = self.get_duplicate_mask(tem_next_ptr, tem_next_logp).detach()  # tensor(B,num_depot)
-                tem_count = 0
-                while duplicates_mask.any():
-                    if tem_count > 100:
-                        print("duplicate", tem_count)
-                    tem_count += 1
+            # tem_next_ptr 是len=num_car,内部元素(B,)的列表。
+            tem_next_ptr2=torch.transpose(torch.stack(tem_next_ptr),1,0).detach()# tensor(B,num_depot)
+            tem_next_logp2=torch.transpose(torch.stack(tem_next_logp),1,0).detach() # tensor(B,num_depot)
+
+            duplicates_mask = self.get_duplicate_mask(tem_next_ptr2,tem_next_logp2)
+
+            tem_count=0
+            while duplicates_mask.any():
+                if tem_count>100:
+                    print("duplicate",tem_count)
+                tem_count+=1
+                for batch_id in range(tem_next_ptr2.size(0)):
+                    row_ptr, row_logp=tem_next_ptr2[batch_id],tem_next_logp2[batch_id]
                     # 找出本行里面是否有重复元素
-                    if duplicates_mask.any():  # 如果有，遍历选到重复点的car：
+                    if duplicates_mask[batch_id].any():  # 如果有，遍历选到重复点的car：
+                        # print(f"duplicate:{row_ptr}")
                         # √ 在duplicates_mask里面为True的元素就是 “ptr重复且logp不是同数字的top1的元素”
                         if tem_count > 100:
-                            print("row_ptr修改前：", tem_next_ptr)
-                        for duplicate_car in duplicates_mask.any(dim=0).nonzero():  # 纵轴比较，找出有重复点的car id
-                            duplicate_car = duplicate_car.item()  # duplicate_car是本行中需要重新选点的car id（等价于下标）
-                            # new_ptr, new_logp = self.get_next_ptr_by_mask(row_ptr, duplicates_mask, duplicate_car, mask_home, probs_home, batch_id,tour_idx)
-                            new_ptr, new_logp = self.get_next_ptr_by_mask2_whole(tem_next_ptr, duplicates_mask,
-                                                                                 duplicate_car, mask_home, probs_home,
-                                                                                 tour_idx)
-                            mask_car = duplicates_mask[:, duplicate_car]  # duplicates_mask形状B，num_car
-                            tem_next_ptr[duplicate_car] = tem_next_ptr[duplicate_car] * torch.logical_not(
-                                mask_car) + new_ptr * mask_car
-                            tem_next_logp[duplicate_car] = tem_next_logp[duplicate_car] * torch.logical_not(
-                                mask_car) + new_logp * mask_car
-                        if tem_count > 100:
-                            print("row_ptr修改后：", tem_next_ptr)
-                    duplicates_mask = self.get_duplicate_mask(tem_next_ptr, tem_next_logp)  # 刷新重复元素
+                            print("row_ptr修改前：",row_ptr)
+                        for duplicate_car in duplicates_mask[batch_id].nonzero():
+                            duplicate_car=duplicate_car.item() # duplicate_car是本行中需要重新选点的car id（等价于坐标）
+                            new_ptr, new_logp = self.get_next_ptr_by_mask(row_ptr, duplicates_mask, duplicate_car, mask_home, probs_home, batch_id,tour_idx)
+                            row_ptr[duplicate_car]=new_ptr.clone()
+                            row_logp[duplicate_car]=new_logp.clone()
+                            # ?????????????????????????可以直接写成楼下吗
+                            # todo 假设不改变真实的航线，看看会发生什么【理论上是等价于不解决冲突的吧？】
+                            copy_tour=tem_next_ptr[duplicate_car].clone()
+                            copy_tour[batch_id]=new_ptr # 应该好像是没问题的,ptr本身又不求导
+                            tem_next_ptr[duplicate_car]=copy_tour
+                            # # tem_next_ptr[duplicate_car][batch_id]=new_ptr # 就是这行赋值导致的出错
+                            tem_next_logp[duplicate_car][batch_id]=new_logp
 
+                        if tem_count > 100:
+                            print("row_ptr修改后：", row_ptr)
+
+                # todo :把tem_next_ptr2的维度改回来………………
+                duplicates_mask = self.get_duplicate_mask(tem_next_ptr2,tem_next_logp2) # 刷新重复元素
             # ---------处理冲突结束----------------
 
             # -------------for every uav循环：储存本轮的访问计划、更新地图-----------------
@@ -349,13 +362,12 @@ class DRL4TSP(nn.Module):
                     logp= tem_next_logp[car_id]
                     logp = logp * (1. - is_done)  # 如果完成了，logp 也是0, 梯度就不会更新了
 
-                    # 每个无人机的logp和ptr是单独存放，以便单独反向传播。
-                    #tour_logp.append(logp.unsqueeze(1))  # 每个时间t都要储存：因为为了计算整条路径出现的概率. T B 1
-                    tour_logp[car_id].append(logp.unsqueeze(1)) # 为了把优化目标改为每个无人机的路径，需要添加维度
+                    tour_logp.append(logp.unsqueeze(1))  # 每个时间t都要储存：因为为了计算整条路径出现的概率. T B 1
                     tour_idx[car_id].append(ptr.data.unsqueeze(1))  # T B 1 把当前无人机的新访问的点保存起来。
 
         else:
             print(f"达到最大迭代次数{max_steps}退出")
+
 
         if (dynamic[:,1,:]>0).any():# 如果仍然有需求
             a=torch.nonzero(dynamic[:,1,:])
@@ -366,110 +378,56 @@ class DRL4TSP(nn.Module):
             pass
 
         # tour_idx 大小：最外层是list，包含num depot 个元素，每个元素是batch*无人机飞行过node个数。
-        tour_idx = [torch.cat(tour_idx[i], dim=1) for i in range(self.depot_num)]  # 包含了每一辆无人机的轨迹【这个不用改】
-        # tour_logp = torch.cat(tour_logp, dim=1)  # (batch_size, seq_len)
-        tour_logp = [torch.cat(tour_logp[i], dim=1) for i in range(self.depot_num)] #外层是list，包含num depot 个元素(batch_size, seq_len)
+        tour_idx = [torch.cat(tour_idx[i], dim=1) for i in range(self.depot_num)]  # 包含了每一辆无人机的轨迹
+        tour_logp = torch.cat(tour_logp, dim=1)  # (batch_size, seq_len)
         return tour_idx, tour_logp
 
-    # def get_next_ptr_by_mask(self,row_logp, row_ptr, duplicates_mask, car_id, mask_home, probs_home, batch_id,tour_list):
-    #     '''
-    #     在这里面更新mask、、、结合原始的probs分布重新选一个点？
-    #     mask:旧的mask【看来又要mask home了或者时间换空间
-    #     返回值：最新的单个batch、单个飞机的ptr和logp
-    #     '''
-    #     probs=probs_home[car_id][batch_id].clone() # (num_node,)
-    #     mask=mask_home[car_id][batch_id].clone() # 目前这是一个元素……# # (num_node,)
-    #
-    #     # 用旧的mask叠加现在新的需要mask掉的重复点。
-    #     duplicates_mask_row = duplicates_mask[batch_id]  # duplicates_mask True为重复元素
-    #     visited_id = row_ptr[torch.logical_not(duplicates_mask_row)]  # 标记处那些点是非重复元素。（把非重复元素作为访问过的点，mask掉，
-    #     mask[visited_id] = False  # 把其他人访问过的改为False
-    #
-    #     if not mask.byte().any():   # 是因为在最后阶段，，其他点都被访问了，所以不得不【留在仓库】
-    #         current_pos = tour_list[car_id][-1][batch_id].clone().detach()  # 当前所在id
-    #         mask[current_pos]=True
-    #
-    #     if not mask.byte().any():  # 如果全mask掉了就退出
-    #         raise ValueError(f"not mask.byte().any() in get_next_ptr()：{mask}")
-    #
-    #     probs = F.softmax(probs + mask.log(), dim=0)
-    #     # probs = F.softmax(probs, dim=1) + mask.log() # todo？有没有更合理的？【使用原始prob的概率会如何？】
-    #
-    #     if self.training:
-    #
-    #         try:
-    #             m = torch.distributions.Categorical(probs)
-    #         except:
-    #             raise ValueError("Error: m = torch.distributions.Categorical(probs)")
-    #         ptr = m.sample()  # 根据上面的概率分布，采样一个点。大小B
-    #
-    #         while not torch.gather(mask, 0, ptr.data.unsqueeze(0)).byte().all():
-    #             ptr = m.sample()
-    #
-    #         logp = m.log_prob(ptr)  # 记录这个点的概率……todo 还有一个不合理的地方是：这个去的logp不是旧的probs的logp……
-    #
-    #     else:
-    #         # prob, ptr = torch.max(probs, 1)  # Greedy
-    #         prob, ptr = torch.max(probs,0)
-    #         logp = prob.log()  # 1
-    #         # print(f"self.test in get_next_ptr_by_mask choose {ptr} with prob {prob}")
-    #
-    #     return ptr,logp
-    def get_next_ptr_by_mask2_whole(self, ptr_matrix, duplicates_mask, car_id, mask_home, probs_home, tour_list):
+    def get_next_ptr_by_mask(self, row_ptr, duplicates_mask, car_id, mask_home, probs_home, batch_id,tour_list):
         '''
-        比起旧的函数，只是多了一个B的维度……
-        使用新mask结合原始的probs分布重新选一个点
-        mask:旧的mask
-        返回值：最新的【整个】batch、【所有】飞机的ptr和logp
+        在这里面更新mask、、、结合原始的probs分布重新选一个点？
+        mask:旧的mask【看来又要mask home了或者时间换空间
+        返回值：最新的单个batch、单个飞机的ptr和logp
         '''
-        probs = probs_home[car_id].clone()  # (B,num_node)
-        mask = mask_home[car_id].clone()  # # (B,num_node)
-        ptr_matrix_tran = torch.stack(ptr_matrix).detach()  # tensor(B,num_depot)
-        # 用旧的mask叠加现在新的需要mask掉的重复点。……todo 烦死了必须要按行遍历batch……
-        for batch_id in range(probs.size(0)):
-            if not duplicates_mask[batch_id].any():
-                continue
-            # print(f"batch_id={batch_id}")
-            duplicates_mask_row = duplicates_mask[batch_id]  # duplicates_mask True为重复元素
-            row_ptr = ptr_matrix_tran[:, batch_id].clone().detach()  # todo ??应该要detach吧？
-            visited_id = row_ptr[torch.logical_not(duplicates_mask_row)]  # 标记处那些点是非重复元素。（把非重复元素作为访问过的点，mask掉，
-            mask[batch_id][visited_id] = False  # 把其他人访问过的改为False
+        probs=probs_home[car_id][batch_id].clone() # (num_node,)
+        mask=mask_home[car_id][batch_id].clone() # 目前这是一个元素……# # (num_node,)
 
-            if not mask[batch_id].byte().any():  # 是因为在最后阶段，，其他点都被访问了，所以不得不【留在仓库】
-                current_pos = tour_list[car_id][-1][batch_id].clone().detach()  # 当前所在id
-                mask[batch_id][current_pos] = True
+        # 用旧的mask叠加现在新的需要mask掉的重复点。
+        duplicates_mask_row = duplicates_mask[batch_id]  # duplicates_mask True为重复元素
+        visited_id = row_ptr[torch.logical_not(duplicates_mask_row)]  # 标记处那些点是非重复元素。（把非重复元素作为访问过的点，mask掉，
+        mask[visited_id] = False  # 把其他人访问过的改为False
 
-            if not mask[batch_id].byte().any():  # 如果全mask掉了就退出
-                raise ValueError(f"not mask[{batch_id}].byte().any() in get_next_ptr()：{mask}")
+        if not mask.byte().any():   # 是因为在最后阶段，，其他点都被访问了，所以不得不【留在仓库】
+            current_pos = tour_list[car_id][-1][batch_id].clone().detach()  # 当前所在id
+            mask[current_pos]=True
 
-        probs = F.softmax(probs + mask.log(), dim=1)  # (B,num_node)
+        if not mask.byte().any():  # 如果全mask掉了就退出
+            raise ValueError(f"not mask.byte().any() in get_next_ptr()：{mask}")
+
+        probs = F.softmax(probs + mask.log(), dim=0)
         # probs = F.softmax(probs, dim=1) + mask.log() # fixme ？？？？？？？有没有更合理的？不知道如果使用这种会怎么样……
 
         if self.training:
+
             try:
                 m = torch.distributions.Categorical(probs)
             except:
                 raise ValueError("Error: m = torch.distributions.Categorical(probs)")
             ptr = m.sample()  # 根据上面的概率分布，采样一个点。大小B
 
-            while not torch.gather(mask, 1, ptr.data.unsqueeze(1)).byte().all():  # todo 这个dim要修改吗
+            while not torch.gather(mask, 0, ptr.data.unsqueeze(0)).byte().all():
                 ptr = m.sample()
 
-            logp = m.log_prob(ptr)  # 记录这个点的概率……todo 还有一个不合理的地方是：这个去的logp不是旧的probs的logp……呃呃！
+            logp = m.log_prob(ptr)  # 记录这个点的概率……todo 不合理的地方是：这个去的logp不是旧的probs的logp……呃呃！
 
         else:
             # prob, ptr = torch.max(probs, 1)  # Greedy
-            prob, ptr = torch.max(probs, 1)
+            prob, ptr = torch.max(probs,0)
             logp = prob.log()  # 1
             # print(f"self.test in get_next_ptr_by_mask choose {ptr} with prob {prob}")
 
-        return ptr, logp
+        return ptr,logp
 
     def get_duplicate_mask(self,next_ptr_matrix, next_logp_matrix):
-
-        next_ptr_matrix = torch.transpose(torch.stack(next_ptr_matrix), 1, 0).detach()  # tensor(B,num_depot) # todo 修好了之后把中间变量去掉。
-        next_logp_matrix = torch.transpose(torch.stack(next_logp_matrix), 1, 0).detach()  # tensor(B,num_depot)
-
         # 创建一个和 tensor 同样大小的布尔 tensor，
         duplicates_mask = torch.zeros_like(next_ptr_matrix, dtype=torch.bool)
         for i in range(next_ptr_matrix.size(0)):
@@ -491,8 +449,18 @@ class DRL4TSP(nn.Module):
 """##vrp.py
 VehicleRoutingDataset类在初始化时生成一系列随机的VRP实例，包括城市的位置、每个城市的需求量、车辆的最大载重量等。此外，它提供了__getitem__方法来获取单个VRP实例，以及update_mask和update_dynamic方法来更新在解决问题过程中的动态状态，如车辆的当前载重量和城市的剩余需求量。
 
+reward函数用于计算给定路径的总行驶距离，作为优化目标的一部分。
+
+最后，render函数用于将找到的解决方案可视化，通过绘制车辆的行驶路径来展示如何满足所有城市的需求，同时尽可能减少行驶距离。代码中还包含了一个注释掉的render函数版本，该版本使用了matplotlib的动画功能来动态展示路径的构建过程，但默认情况下是不启用的。
 """
 
+"""定义车辆路径问题 (VRP) 的主要任务。
+
+车辆路径问题由以下特征定义：
+    1. 每个城市有一个在 [1, 9] 范围内的需求量，必须由车辆服务
+    2. 每辆车有一定的容量（取决于问题），必须访问所有城市
+    3. 当车辆载重为 0 时，必须返回仓库进行补给
+"""
 
 from torch.utils.data import Dataset
 
@@ -931,8 +899,8 @@ def reward(static, tour_indices):  # 这个是旧的reward，,depot_number参数
     # 将列表中的所有元素堆叠成一个新的张量。# total_len是大小为depot num的列表，元素为tensor(B,)
     total_len_tensor = torch.stack(total_len) # total_len_tensor大小depot num * B
     # 计算所有旅行的总长度之和
-    #total_distance = total_len_tensor.sum(0) # 大小(B,),是把同一个Batch内部，所有飞机的总路程求和。
-    return total_len_tensor #total_distance
+    total_distance = total_len_tensor.sum(0) # 大小(B,),是把同一个Batch内部，所有飞机的总路程秀禾。
+    return total_distance
 
 
 def render(static, tour_indices, num_depots, save_path):
@@ -1047,11 +1015,31 @@ def render_dynamic(static, tour_indices, num_depots, save_path):
 
 
 
-"""
+"""##trainer.py
 主要组件
+
 * StateCritic类：估计给定问题的复杂性。它接受静态和动态输入，并通过一系列的全连接层（Conv1d）来估计问题的复杂性或成本。
+
 * Critic类：一个简化版的StateCritic，用于估计问题的复杂性。它通过全连接层处理输入，输出问题复杂性的估计值。
+
+* train函数：负责训练过程，包括前向传播、计算奖励、计算损失、反向传播和参数更新。它同时训练Actor和Critic网络。
+
+* validate函数：在验证集上评估模型性能，计算平均奖励，并可选地渲染和保存解决方案的图像。
+
+* train_tsp和train_vrp函数：这两个函数分别用于设置和训练TSP和VRP问题的模型。它们加载数据集、初始化模型和优化器，并调用train函数进行训练。
+
+* 命令行参数解析：代码的最后部分解析命令行参数，以便用户可以指定训练的任务类型（TSP或VRP）、节点数、学习率、批大小等参数。
 """
+
+"""Defines the main trainer model for combinatorial problems
+
+Each task must define the following functions:
+* mask_fn: can be None
+* update_fn: can be None
+* reward_fn: specifies the quality of found solutions
+* render_fn: Specifies how to plot found solutions. Can be None
+"""
+
 
 class StateCritic(nn.Module):
     # 简单的使用model里的Encoder方法以及三次一维卷积得到Critic的结果
@@ -1121,8 +1109,7 @@ def validate(data_loader, actor, reward_fn, render_fn=None, save_dir='.',
 
         # 使用vrp奖励函数 reward_fn 计算预测的旅游索引的奖励。取奖励的均值，并使用 item() 提取标量值，添加到rewards列表中
         # reward = reward_fn(static, tour_indices).mean().item()
-        reward = reward_fn(static, tour_indices) # 已修改reward fn，现在大小为tensor(num_depot,B)
-        reward=reward.sum(0) # todo 已修改reward fn，新增了这行，方便下面代码实现保持一致。
+        reward = reward_fn(static, tour_indices)  # 本batch的所有reward 列表 #
         batch_reward_mean = reward.mean().item()  # 本batch的均值。
         # rewards.append(batch_reward_mean)
         rewards.extend(reward.tolist())
@@ -1149,7 +1136,7 @@ def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
     now = datetime.datetime.now()
     format_now = '%s' % now.month + "_" + '%s' % now.day + "_" + '%s' % now.hour + "_" + '%s' % now.minute + "_" + '%s' % now.second
 
-    save_dir = os.path.join(current_dir, task + "parallel_train_log_uav_goal_times", '%d' % num_city, format_now)  # ./vrp/numnode/time
+    save_dir = os.path.join(current_dir, task + "parallel_train_log", '%d' % num_city, format_now)  # ./vrp/numnode/time
     # 创建能够保存训练中checkpoint的文件夹
     checkpoint_dir = os.path.join(save_dir, 'train_checkpoints')  # /vrp/numnode/time/checkpoints
     if not os.path.exists(checkpoint_dir):
@@ -1183,46 +1170,28 @@ def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
             dynamic = dynamic.to(device)
             x0 = x0.to(device) if len(x0) > 0 else None
 
-            # todo:1用每条无人机路径来训练同一个网络。
+            # todo:改为：1用每条无人机路径来训练同一个网络。OR：2每个无人机有自己的网络。【有点难改】
+
+            # 算是一个无人机，那下面那个reward的要改一下吗？【不可以改。因为使用倒过来是基于值的MC，是用迭代更新的。这里是策略网络，r的绝对值都没法比较，改不了】
+            # todo：不要用MC？那要改成什么？？？？？TT
+            # todo：环境观测：输入的是十台无人机的位置？
+
             # Full forward pass through the dataset(使用actor的前向传播)
             tour_indices, tour_logp = actor(static, dynamic, x0)  # 调用的是forward函数。
 
-            reward = reward_fn(static, tour_indices) # reward(B,) 修改了reward 函数！现在depot num * B
-
-            # 新增：为了把优化目标改为独立的uav的路径长度，tour_logp：list[depot_num:tensor(T,B,)]
-            tour_logp_per_uav=[tour_logp[i].sum(dim=1) for i in range (depot_num)] # todo 是不是该用stack
-
-            # Query the critic for an estimate of the reward(向评论家询问奖励的估计值)
-            critic_est = critic(static, dynamic).view(-1)  # (B,) # fixme？这能改吗？或许还有其他的critic的拟合对象可以实验？
-            critic_est_per_uav=critic_est / depot_num # todo test 暂时使用critic/depot num进行测试。
-            advantage_per_uav=(reward-critic_est_per_uav).detach()
+            reward = reward_fn(static, tour_indices) # (B,)
+            critic_est = critic(static, dynamic).view(-1)  # (B,)
+            # 真实奖励值和估计奖励值的差，作为优势函数
+            advantage = (reward - critic_est) # (B,)
+            actor_loss = torch.mean(advantage.detach() * tour_logp.sum(dim=1)) # tour_logp:(B，路程长度）.之所以要sum是为了求路径出现概率
+            # critic_loss是根据优势函数的平方误差计算的
+            critic_loss = torch.mean(advantage ** 2) # MSE 的梯度。
+            # 0梯度反向传播
             actor_optim.zero_grad()
-            actor_losses=[]
-            # 新增：对每辆无人机的路径进行训练。
-            for uav_id in range(depot_num):
-                # reward_per_uav=reward[uav_id]
-                # advantage=(reward_per_uav - critic_est_per_uav) # (B,)
-                advantage=advantage_per_uav[uav_id]
-                tour_logp = tour_logp_per_uav[uav_id]
-                actor_loss = torch.mean(advantage * tour_logp)  # tour_logp:(B，路程长度）.之所以要sum是为了求路径出现概率
-                actor_loss.backward(retain_graph=True)
-                actor_losses.append(actor_loss.detach().item()) # 保存一下,用于绘图
-
+            actor_loss.backward()
+            # 对模型的梯度进行裁剪，以防止梯度爆炸问题
             torch.nn.utils.clip_grad_norm_(actor.parameters(), max_grad_norm)
             actor_optim.step()
-            # 真实奖励值和估计奖励值的差，作为优势函数(这里是A2C中的advantage)
-            # advantage = (reward - critic_est) # (B,)
-            # actor_loss是优势函数乘以演员的动作概率分布，这个乘积表示每个动作的优势加权的动作概率。然后取平均值作为演员的损失
-            # actor_loss = torch.mean(advantage.detach() * tour_logp.sum(dim=1)) # tour_logp:(B，路程长度）.之所以要sum是为了求路径出现概率
-            # critic_loss是根据优势函数的平方误差计算的
-            advantage= (reward.sum(0) - critic_est) # todo 这样割裂两种advantage真的没关系吗
-            critic_loss = torch.mean(advantage ** 2)
-            # 0梯度反向传播
-            # actor_optim.zero_grad()
-            # actor_loss.backward()
-            # 对模型的梯度进行裁剪，以防止梯度爆炸问题
-            # torch.nn.utils.clip_grad_norm_(actor.parameters(), max_grad_norm)
-            # actor_optim.step()
 
             critic_optim.zero_grad()
             critic_loss.backward()
@@ -1230,11 +1199,8 @@ def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
             critic_optim.step()
             # 将奖励估计值，真实奖励值，actor损失平均求和后写入空列表中
             critic_rewards.append(torch.mean(critic_est.detach()).item())
-            # rewards.append(torch.mean(reward.detach()).item())# todo 已修改。
-            rewards.append(torch.mean(reward.sum(0).detach()).item())
-            actor_losses=sum(actor_losses)/len(actor_losses)
-            # losses.append(torch.mean(actor_losses.detach()).item())# todo 已修改。
-            losses.append(actor_losses)
+            rewards.append(torch.mean(reward.detach()).item())
+            losses.append(torch.mean(actor_loss.detach()).item())
 
             # 每100次输出
             if (batch_idx + 1) % 100 == 0:
@@ -1289,7 +1255,6 @@ def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
 
         mean_loss = np.mean(losses)
         mean_reward = np.mean(rewards)
-
         # Save the weights
         epoch_dir = os.path.join(checkpoint_dir, '%s' % epoch)  #./vrp_numnode_time//checkpoints/0
         if not os.path.exists(epoch_dir):
@@ -1307,7 +1272,6 @@ def train(actor, critic, task, num_city, train_data, valid_data, reward_fn,
         # 每一个epoch validate一次。
         mean_valid, _ = validate(valid_loader, actor, reward_fn, render_fn,
                                  valid_dir, num_plot=5, depot_number=depot_num)
-
         # Save best model parameters(保存最佳奖励) 是每个epoch检查!!!使用valid set的reward来选！！！
         if mean_valid < best_reward:  # reward 就是路程总长度。暂定无惩罚项(好像确实不需要额外的乘法）
             best_reward = mean_valid
@@ -1438,9 +1402,9 @@ def run_RL_exp(share_depot, args):
                                       args.depot_num)
 
     if share_depot:
-        test_dir = 'test_picture_shared_depot'
+        test_dir = '../test_picture_shared_depot'
     else:
-        test_dir = 'test_picture'
+        test_dir = '../test_picture'
 
     test_loader = DataLoader(test_data, args.batch_size, False, num_workers=0)
 
@@ -1524,9 +1488,9 @@ def run_multi_alg_test(share_depot, args, algorithm):
         actor.load_state_dict(torch.load(path, device))  # load_state_dict：加载模型参数
 
         if share_depot:
-            test_dir = 'test_picture_shared_depot'
+            test_dir = '../test_picture_shared_depot'
         else:
-            test_dir = 'test_picture'
+            test_dir = '../test_picture'
 
         test_loader = DataLoader(test_data, args.batch_size, False, num_workers=0)
 
@@ -1560,10 +1524,10 @@ def test_generalization_uav_change(shared, run_alg_name):
     args = parser.parse_known_args()[0]  # colab环境跑使用
 
     if shared:
-        args.checkpoint = os.path.join("trained_model", "total_shared_w200")
+        args.checkpoint = os.path.join("../trained_model", "total_shared_w200")
         # args.checkpoint = os.path.join("trained_model", "total_shared_w200_w250")
     else:  # not share
-        args.checkpoint = os.path.join("trained_model", "trained_w200")
+        args.checkpoint = os.path.join("../trained_model", "trained_w200")
     print("比较算法：",run_alg_name)
     reward_list_dict={}
 
@@ -1580,7 +1544,7 @@ def test_generalization_uav_change(shared, run_alg_name):
         plt.plot(uav_list, reward_list_dict[alg], label=f"{alg} average path")
     # plt.plot(uav_list, avg_R_Greedy, label="Greedy average path")
     plt.legend()
-    dir = os.path.join("generalization_test_picture")
+    dir = os.path.join("../generalization_test_picture")
     if not os.path.exists(dir):
         os.makedirs(dir)
     plt.savefig(os.path.join(dir, f"Greedy_VS_RL on {args.num_city} tower share={shared}.png"))
@@ -1622,9 +1586,9 @@ def test_generalization_tower_change(share,run_alg_name):
 
     args.test = True
     if share:
-        args.checkpoint = os.path.join("trained_model", "total_shared_w200")
+        args.checkpoint = os.path.join("../trained_model", "total_shared_w200")
     else:  # not share
-        args.checkpoint = os.path.join("trained_model", "trained_w200")
+        args.checkpoint = os.path.join("../trained_model", "trained_w200")
 
     # run_alg_name = ["Greedy", "RL"]
     print("比较算法：", run_alg_name)
@@ -1641,7 +1605,7 @@ def test_generalization_tower_change(share,run_alg_name):
     for alg in reward_list_dict.keys():
         plt.plot(tower_list, reward_list_dict[alg], label=f"{alg} average path")
     plt.legend()
-    dir = os.path.join("generalization_test_picture")
+    dir = os.path.join("../generalization_test_picture")
     if not os.path.exists(dir):
         os.makedirs(dir)
     share=str(share)
@@ -1667,7 +1631,7 @@ if __name__ == '__main__':
     parser.add_argument('--checkpoint', default=None)
     parser.add_argument('--test', action='store_true', default=False)
     parser.add_argument('--task', default='vrp')
-    parser.add_argument('--nodes', dest='num_city', default=50, type=int)  #todo 对齐#########
+    parser.add_argument('--nodes', dest='num_city', default=200, type=int)  #todo 对齐#########
     # parser.add_argument('--actor_lr', default=5e-4, type=float)
     # parser.add_argument('--critic_lr', default=5e-4, type=float)
     parser.add_argument('--actor_lr', default=1e-4, type=float)  # 学习率，现在在训练第4epoch，我手动改了一下
@@ -1678,9 +1642,9 @@ if __name__ == '__main__':
     parser.add_argument('--hidden', dest='hidden_size', default=128, type=int)
     parser.add_argument('--dropout', default=0.1, type=float)
     parser.add_argument('--layers', dest='num_layers', default=1, type=int)
-    parser.add_argument('--train-size', default=900, type=int)  #fixme!!!!!!!!!!!!
-    parser.add_argument('--valid-size', default=10, type=int)
-    parser.add_argument('--depot_num', default=5, type=int)  # todo ###############
+    parser.add_argument('--train-size', default=100000, type=int)  #fixme!!!!!!!!!!!!
+    parser.add_argument('--valid-size', default=1000, type=int)
+    parser.add_argument('--depot_num', default=20, type=int)  # todo ###############
 
     # 解析为args
     args = parser.parse_known_args()[0]  # colab环境跑使用
@@ -1697,11 +1661,13 @@ if __name__ == '__main__':
 
 
     print("---------这是同时决策版本 py---------")
+    #
     # todo 关于bug：
     #  注意last hh是否有问题、冲突解决的地方是否有错误。【是不是应该把没量无人机的last hh存起来？但是不解决冲突版本也没有这样】
     # todo ：其他改进方案：输入编码器的静态信息只能是本无人机的xy吗？能不能加入其他无人机的xy？【太复杂的话是不是还要把网络加深】
-    # print("记得删掉torch.autograd.set_detect_anomaly(True)")
-    # torch.autograd.set_detect_anomaly(True)
+
+
+
     import time
     # 开始计时
     start_time = time.time()
