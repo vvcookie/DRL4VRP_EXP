@@ -387,7 +387,7 @@ if __name__ == "__main__":
     position_set = np.random.random(size=(run_times, 2, tower_n + uav_n)) # 共用地图。
     share=False
     upper, lower=1.2, 0.9
-
+    print("????????????//真的写完了吗")
     if share:
         # # # 运行共享
         reward_set_share=run_greedy_VRP(position_set,tower_n,uav_n,upper,lower,share=True) # 共享的效果也太差了……因为一直在局部搜索，去其他人仓库的约束其实还挺差的

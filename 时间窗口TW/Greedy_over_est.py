@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
 
-def DRL4VRP_Problem(tower_num, uav_num, position,est_upper, est_lower, _share):
+def DRL4VRP_Problem(tower_num, uav_num, position,est_upper, est_lower, _share, tower_demand=None):
     """
     """
     map_size = 1  # 这是边长。100*100.能量需要2*√2 *100=280
@@ -19,7 +19,10 @@ def DRL4VRP_Problem(tower_num, uav_num, position,est_upper, est_lower, _share):
 
     visited_tower = [False] * tower_num  # 标记是否访问过。todo  以后如果demand不同，可以用visited来存放demand的值。
     empty_depot=[False] * uav_num # 充电桩是否为空。初始为满。离开和访问的时候更新
-    tower_demand = np.full(tower_num,tower_need)
+    if tower_demand is None:
+        tower_demand = np.full(tower_num,tower_need)
+    else:
+        tower_demand= np.array(tower_demand)
 
     # 新增：N2N dis：包括电塔和仓库在内的所有点之间的两点距离
     pos_self = np.expand_dims(position,1).repeat(tower_num+uav_num,axis=1) # 扩展一下维度，用于距离矩阵计算
@@ -345,7 +348,7 @@ def DRL4VRP_Problem(tower_num, uav_num, position,est_upper, est_lower, _share):
 
 
 
-def run_greedy_VRP(position_set,tower_n,uav_n,upper,lower,share):
+def run_greedy_VRP(position_set,tower_n,uav_n,upper,lower,share,tower_demand_set=None):
     '''
     适用于一次性运行n个贪心算法VRP问题实例。是用于把RL的数据集传进来训练的接口。
     position_set: 为多个地图的集合。
@@ -361,7 +364,11 @@ def run_greedy_VRP(position_set,tower_n,uav_n,upper,lower,share):
     run_time=position_set.shape[0]
     for t in range(run_time):
         position = position_set[t]  # 使用外界传进来的坐标
-        reward = DRL4VRP_Problem(tower_n, uav_n, position,upper,lower,share)
+        if tower_demand_set is not None:
+            tower_demand= tower_demand_set[t]
+        else:
+            tower_demand = None
+        reward = DRL4VRP_Problem(tower_n, uav_n, position,upper,lower,share, tower_demand=tower_demand)
         reward_set.append(reward)
 
     average_reward = sum(reward_set) / run_time

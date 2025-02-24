@@ -7,19 +7,22 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
 
-def DRL4VRP_Problem(tower_num, uav_num, position,est_upper, est_lower, _share):
+def DRL4VRP_Problem(tower_num, uav_num, position,est_upper, est_lower, _share, tower_demand=None):
     """
     """
-    map_size = 1  # 这是边长。100*100.能量需要2*√2 *100=280
-    max_energy = 2 *  map_size * 1.4  # 为了保证一定能够飞到最远端。 # todo 对齐1
-    tower_need=0.1 # todo 暂定是0.1。对齐1
+    MAP_SIZE = 1  # 这是边长。100*100.能量需要2*√2 *100=280
+    MAX_ENERGY = 2 *  MAP_SIZE * 1.4  # 为了保证一定能够飞到最远端。 # todo 对齐1
+    TOWER_NEED =0.1 # todo 暂定是0.1。对齐1
 
     # 创建地图.前uav_num个是给无人机仓库用的
     tower_position = position[uav_num:] # 电塔坐标
 
     visited_tower = [False] * tower_num  # 标记是否访问过。todo  以后如果demand不同，可以用visited来存放demand的值。
     empty_depot=[False] * uav_num # 充电桩是否为空。初始为满。离开和访问的时候更新
-    tower_demand = np.full(tower_num,tower_need)
+    if tower_demand is None:
+        tower_demand = np.full(tower_num,TOWER_NEED)
+    else:
+        tower_demand= np.array(tower_demand)
 
     # 新增：N2N dis：包括电塔和仓库在内的所有点之间的两点距离
     pos_self = np.expand_dims(position,1).repeat(tower_num+uav_num,axis=1) # 扩展一下维度，用于距离矩阵计算
@@ -72,8 +75,8 @@ def DRL4VRP_Problem(tower_num, uav_num, position,est_upper, est_lower, _share):
         '''
         plt.close('all')
         fig, ax = plt.subplots(figsize=(6, 6))
-        ax.set_ylim(0, map_size)
-        ax.set_xlim(0, map_size)
+        ax.set_ylim(0, MAP_SIZE)
+        ax.set_xlim(0, MAP_SIZE)
 
         plt.tight_layout()
         # ax.grid()
@@ -124,7 +127,7 @@ def DRL4VRP_Problem(tower_num, uav_num, position,est_upper, est_lower, _share):
             self.depot_id=init_id
             self.current_node_id=init_id # 要多加一个这个。
             self.track = [depot_pos]  # 路程轨迹坐标……不是id。初始化仓库位置。当前所在位置=取[-1]
-            self.energy = max_energy # 初始化
+            self.energy = MAX_ENERGY # 初始化
 
         def is_in_depot(self):
             # 【非共享版本】
@@ -296,9 +299,9 @@ def DRL4VRP_Problem(tower_num, uav_num, position,est_upper, est_lower, _share):
                     uav.track.append(position[depot_id]) # 被选择的充电桩坐标
                     uav.current_node_id = depot_id  # 更新为成被选择的充电桩
                     empty_depot[depot_id] = False
-                    uav.energy = max_energy
+                    uav.energy = MAX_ENERGY
                     # rand_factor=(est_lower+np.random.rand()*(est_upper-est_lower))
-                    uav_order.append((uav_index, uav_order.pop(0)[1] + cost + tower_need ))  # 添加任务时间排序 # todo 电塔检查不用随机
+                    uav_order.append((uav_index, uav_order.pop(0)[1] + cost + TOWER_NEED ))  # 添加任务时间排序 # todo 电塔检查不用随机
                 else:  # 如果能量足够：过去下一个tower。并且标记已访问。消耗能量
                     uav.track.append(tower_position[near_tower_index])
                     uav.current_node_id=near_tower_index+uav_num # 转换成node id
@@ -340,10 +343,11 @@ def DRL4VRP_Problem(tower_num, uav_num, position,est_upper, est_lower, _share):
 
 
 
-def run_greedy_VRP(position_set,tower_n,uav_n,upper,lower,share):
+def run_greedy_VRP(position_set,tower_n,uav_n,upper,lower,share,tower_demand_set=None):
     '''
     适用于一次性运行n个贪心算法VRP问题实例。是用于把RL的数据集传进来训练的接口。
     position_set: 为多个地图的集合。
+    tower_demand: 多个地图的tower 的demand。大小为 (data_size, tower_num)
     '''
     # print("Run greedy:")
     # print(f"uav number:{uav_n}")
@@ -353,13 +357,17 @@ def run_greedy_VRP(position_set,tower_n,uav_n,upper,lower,share):
         position_set=position_set.numpy()
     position_set = position_set.transpose(0, 2, 1)
 
-    run_time=position_set.shape[0]
-    for t in range(run_time):
+    data_size=position_set.shape[0]
+    for t in range(data_size):
         position = position_set[t]  # 使用外界传进来的坐标
-        reward = DRL4VRP_Problem(tower_n, uav_n, position,upper,lower,share)
+        if tower_demand_set is not None:
+            tower_demand= tower_demand_set[t]
+        else:
+            tower_demand = None
+        reward = DRL4VRP_Problem(tower_n, uav_n, position, upper, lower,share, tower_demand=tower_demand)
         reward_set.append(reward)
 
-    average_reward = sum(reward_set) / run_time
+    average_reward = sum(reward_set) / data_size
     # print(f"Run {run_times} times. Average tour length:  {average_reward}")
     return reward_set
 
