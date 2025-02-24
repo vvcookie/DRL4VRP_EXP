@@ -7,9 +7,10 @@ import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 # -------------------------------------------------------
-from 时间窗口TW.DRL_TW_random import run_RL_exp
-from 时间窗口TW.DRL_TW_random_Over_Est  import run_RL_exp as run_RL_overest
-from 时间窗口TW.DRL_TW_random import VehicleRoutingDataset
+# from 时间窗口TW.DRL_TW_random import run_RL_exp
+# from 时间窗口TW.DRL_TW_random_Over_Est  import run_RL_exp as run_RL_overest
+from 时间窗口TW.DRL_TW_random_unfix_demand import VehicleRoutingDataset_unfix_demand
+from 时间窗口TW.DRL_TW_random_unfix_demand import run_RL_exp as run_RL_unfix_demand
 
 from 时间窗口TW.Greedy_VRP_TW_random import run_greedy_VRP
 from 时间窗口TW.Greedy_over_est import run_greedy_VRP as run_greedy_overestimate
@@ -124,9 +125,6 @@ def test_generalization_tower_change(upper,lower,share,run_alg_name,_save_dir):
             reward_list_dict[key].append(np.mean(val))  # 对每一个算法的reward集合计算平均值。
             print(f"{key}:{reward_list_dict[key]}")
 
-
-
-    # plot画图
     plt.close('all')
     for alg in reward_list_dict.keys():
         plt.plot(tower_list, reward_list_dict[alg], label=f"{alg} average path")
@@ -136,7 +134,6 @@ def test_generalization_tower_change(upper,lower,share,run_alg_name,_save_dir):
     alg_vs_name=" VS ".join(run_alg_name)
     plt.title(f"{alg_vs_name} on {args.depot_num} UAV (share={share})")
 
-    # 保存plot画图
     dir = os.path.join(_save_dir)
     if not os.path.exists(dir):
         os.makedirs(dir)
@@ -144,7 +141,7 @@ def test_generalization_tower_change(upper,lower,share,run_alg_name,_save_dir):
     plt.savefig(os.path.join(dir, f"{alg_vs_name} on {args.depot_num} UAV (share={share}).png"))
     # plt.show()
 
-    # 储存不同算法的均值比较csv
+    # 储存csv
     reward_filename = f"Generalization_on {args.depot_num} UAV (share={str(share)}).csv"
     txt = ",".join(reward_list_dict.keys()) + "\n"
     for rs in zip(*reward_list_dict.values()):
@@ -155,7 +152,7 @@ def test_generalization_tower_change(upper,lower,share,run_alg_name,_save_dir):
         f2.write(txt)
     print(txt)
 
-def run_multi_alg_test(upper,lower, share_depot, args, algorithm):
+def run_multi_alg_test(upper,lower,share_depot, args, algorithm):
     '''
     本函数内部生成测试数据集。
     返回的是{算法：测试结果} 字典
@@ -171,38 +168,38 @@ def run_multi_alg_test(upper,lower, share_depot, args, algorithm):
     max_load = -1  #LOAD_DICT[args.num_city] # todo没事现在maxload已经废弃了
     map_size = 1  # fixme 原代码地图大小默认1，不需要指定。而且本来产生坐标的时候就是0-1范围的浮点。
     car_load = 2 * map_size * 1.4  # 测试
-    MAX_DEMAND = 0.1  # 测试 # todo 目前是固定值。
+    MAX_DEMAND = (0.1,0.2)  # 测试 # todo 目前是固定值。
 
     # 生成测试数据，大小于验证数据一致(1000)
-    test_data = VehicleRoutingDataset(args.valid_size,
-                                      args.num_city,
-                                      max_load,
-                                      car_load,
-                                      MAX_DEMAND,
-                                      args.seed + 2,
-                                      args.depot_num)
+    test_data = VehicleRoutingDataset_unfix_demand(args.valid_size,
+                                                   args.num_city,
+                                                   max_load,
+                                                   car_load,
+                                                   MAX_DEMAND,
+                                                   args.seed + 2,
+                                                   args.depot_num)
 
-    # print('DRL:Average tour length in test set: ', test_out)
 
     algorithm_result={}
 
     # -----------------------------------------------------------------Greedy
     if "Greedy" in algorithm or "Greedy" in algorithm:
         # from Greedy_VRP_TW_random import run_greedy_VRP
-        algorithm_result["Greedy"] = run_greedy_VRP(test_data.static, args.num_city, args.depot_num,upper,lower,share=share_depot)
 
+        algorithm_result["Greedy"]=run_greedy_VRP(test_data.static, args.num_city, args.depot_num,upper,lower,
+                                                  share=share_depot,tower_demand_set=test_data.dynamic[:,1,args.depot_num:])
     if "Greedy_Over" in algorithm:
-        algorithm_result["Greedy_Over"] = run_greedy_overestimate(test_data.static, args.num_city, args.depot_num,upper,lower,share=share_depot)
+        algorithm_result["Greedy_Over"] = run_greedy_overestimate(test_data.static, args.num_city, args.depot_num,upper,lower,
+                                                                  share=share_depot,tower_demand_set=test_data.dynamic[:,1,args.depot_num:])
 
     #------------------------------------------------------------------RL
     if "RL" in algorithm:
-        RL_test_reward =run_RL_exp(upper,lower,share_depot,args)
+        RL_test_reward =run_RL_unfix_demand(upper,lower,share_depot,args)
         algorithm_result["RL"]= RL_test_reward
-
     if "RL_Over" in algorithm:
-        RL_test_reward = run_RL_overest(upper,lower,share_depot,args)
-        algorithm_result["RL_Over"] = RL_test_reward
-
+        raise ValueError("这个代码不能跑这个。")
+        # RL_test_reward = run_RL_overest(upper,lower,share_depot,args)
+        # algorithm_result["RL_Over"] = RL_test_reward
     return  algorithm_result
 
 if __name__ == '__main__':
@@ -211,21 +208,25 @@ if __name__ == '__main__':
 
     compare_alg= [
         "RL",
-        "RL_Over",
+        #"RL_Over",
         "Greedy",
         # "Greedy_Over"
     ]
 
-    save_dir = "Generalization_TW_random "+" VS ".join(compare_alg)
+    save_dir = "Generalization_TW_random_Unfix_demand "+" VS ".join(compare_alg)
     print(f"Save dir:{save_dir}")
 
     share=True
-    # test_generalization_uav_change(upper, lower, shared=share, run_alg_name=compare_alg, _save_dir=save_dir)
     test_generalization_tower_change(upper, lower, share=share, run_alg_name=compare_alg, _save_dir=save_dir)
     #--------------------------------------------------------------------------
     share = False
-    # test_generalization_uav_change(upper, lower, shared=share, run_alg_name=compare_alg, _save_dir=save_dir)
-    # test_generalization_tower_change(upper, lower, share=share, run_alg_name=compare_alg, _save_dir=save_dir)
+    test_generalization_tower_change(upper, lower, share=share, run_alg_name=compare_alg, _save_dir=save_dir)
+    #--------------------------------------------------------------------------
+    share=True
+    test_generalization_uav_change(upper, lower, shared=share, run_alg_name=compare_alg, _save_dir=save_dir)
+    #--------------------------------------------------------------------------
+    share = False
+    test_generalization_uav_change(upper, lower, shared=share, run_alg_name=compare_alg, _save_dir=save_dir)
 
     print(f"Save dir:{save_dir}")
     print("Running ends.")
