@@ -4,13 +4,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # todo：添加注释、检查约束是否正确、调整为我的问题的约束、
-# todo 加入时间波动！！考虑时间实时？？。
 # todo 写share!!!！
+# todo 加入时间波动！！
+# todo 考虑时间实时？？(只有share才有必要吧？因为independent不会冲突。。）
 # todo: 嵌入对比代码!!!!和greedy速速比较（注意随机种子
 # todo 统计指标的对比、输出format
 
-
-def VNS_VRP_Problem(MAX_ITER, uav_num, tower_num, position, opt, share_):
+def VNS_VRP_Problem(MAX_ITER, uav_num, tower_num, position, opt, share_,draw_path):
     # 参数设置
     BATTERY_CAPACITY = 2.8  # 电池容量
     # DEMAND_RANGE = (0.1, 0.2)  # 需求范围
@@ -19,13 +19,9 @@ def VNS_VRP_Problem(MAX_ITER, uav_num, tower_num, position, opt, share_):
     upper_bound = 1.1
     lower_bound = 0.9
 
-
     # 随机生成客户和仓库坐标（地图1x1）
     depots_pos = {i: position[i][:] for i in range(uav_num)}
     tower_pos = {i: position[uav_num+i][:] for i in range(tower_num)}
-
-    # depots_pos = {i: (random.uniform(0, 1), random.uniform(0, 1)) for i in range(uav_num)}
-    # customers_pos = {i: (random.uniform(0, 1), random.uniform(0, 1)) for i in range(tower_num)}
 
     # demands = {i: round(random.uniform(*DEMAND_RANGE), 2) for i in tower_pos} # 动态的需求版本
     # print("动态的需求！")
@@ -131,6 +127,7 @@ def VNS_VRP_Problem(MAX_ITER, uav_num, tower_num, position, opt, share_):
     # 2-opt局部优化
     def two_opt(route, depot_id):
         best = route
+        best_cost= calculate_cost_path({depot_id: best})
         improved = True
         while improved:
             improved = False
@@ -138,9 +135,11 @@ def VNS_VRP_Problem(MAX_ITER, uav_num, tower_num, position, opt, share_):
                 for j in range(i + 1, len(route)):
                     new_route = route[:i] + route[i:j][::-1] + route[j:]  # 把ij中间倒置
                     new_cost = calculate_cost_path({depot_id: new_route})
-                    if new_cost < calculate_cost_path({depot_id: route}):
+                    if new_cost < best_cost:
                         best = new_route
+                        best_cost = new_cost
                         improved = True
+
             route = best
         return best
 
@@ -230,12 +229,10 @@ def VNS_VRP_Problem(MAX_ITER, uav_num, tower_num, position, opt, share_):
         plt.title("Depots and Customers")
         plt.legend()
 
-        # _, feasible_solution = calculate_cost_path(solution, get_path=True)
         # 路径可视化
         plt.subplot(133)
         for depot_id, path in feasible_solution.items():
             color = colors[depot_id]
-            # path = [depots[depot_id]] + [customers_pos[c] for c in route] + [depots[depot_id]] # 没有画出来中间返回仓库吗！
             path = feasible_solution[depot_id]
             x = [p[0] for p in path]
             y = [p[1] for p in path]
@@ -302,15 +299,16 @@ def VNS_VRP_Problem(MAX_ITER, uav_num, tower_num, position, opt, share_):
 
     distance, feasible_best_solu, history = vns()
 
-    # visualize(feasible_best_solu, history, cost=distance,save=False)
+    if draw_path:
+        visualize(feasible_best_solu, history, cost=distance, save=False)
 
     return distance, feasible_best_solu, history
 
-def multi_converge_visualize(datasize,uav_num,tower_num,share_,history_, mean_cost=-1, save=False):
+
+def multi_converge_visualize(datasize, uav_num,tower_num,share_,history_, mean_cost=-1, save=False):
     """
     用于一次运行多个地图的时候，合并收敛历史，画出收敛图。
     """
-    # plt.figure(figsize=(10, 5))
 
     # 收敛曲线
     # plt.subplot(131)
@@ -334,6 +332,7 @@ def run_vns_VRP(max_iteration, position_set_, tower_num, uav_num, opt,share_):
     print("Run VNS set:")
     print(f"max_iteration={max_iteration}")
     print(f"uav num={uav_num}\ntower_num={tower_num}")
+    print(f"opt function={opt}")
     cost_set = []
 
     if type(position_set_) is not np.ndarray:
@@ -343,9 +342,13 @@ def run_vns_VRP(max_iteration, position_set_, tower_num, uav_num, opt,share_):
 
     mean_converge_history=np.zeros(max_iteration)
 
+
     for t in range(run_time):
         position = position_set_[t]  # 使用外界传进来的坐标
-        cost, solution, converge_history = VNS_VRP_Problem(max_iteration, uav_num, tower_num, position,opt=opt, share_=False)
+        print(f"地图样本{t}:",end="")
+        cost, solution, converge_history = VNS_VRP_Problem(max_iteration, uav_num, tower_num, position,
+                                                           opt=opt, share_=False,
+                                                           draw_path= False if run_time > 1 else True)
         cost_set.append(cost)
         mean_converge_history+=np.array(converge_history)
 
@@ -370,15 +373,16 @@ def progress_bar(finish_tasks_number, tasks_number):
 
 # 主程序
 if __name__ == "__main__":
-    max_iter=50 # VNS 迭代次数。
-    run_times=10
+    max_iter=100 # VNS 迭代次数。
+    run_times=100
     tower_n=50
     uav_n=5
     share=False
+    opt_fun=2
     np.random.seed(123) # todo 随机种子！！方便debug。
     position_set = np.random.random(size=(run_times, 2, tower_n + uav_n))
 
     # 一次性运行多个地图实例。
-    cost_set = run_vns_VRP(max_iter, position_set, tower_n, uav_n, opt=2 ,share_= share)
+    cost_set = run_vns_VRP(max_iter, position_set, tower_n, uav_n, opt=opt_fun ,share_= share)
 
     print(f"Run {run_times} times. VNS Average tour length: {np.mean(cost_set)}")
