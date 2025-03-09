@@ -1,7 +1,8 @@
 import random
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
+
 
 # todo：添加注释、检查约束是否正确、调整为我的问题的约束、
 # todo 写share!!!！
@@ -59,12 +60,78 @@ def VNS_VRP_Problem(MAX_ITER, uav_num, tower_num, position, opt, share_,draw_pat
                 idx1]
         return new_solution
 
+    # def calculate_cost_path_wo_fluctuate(solution, get_path=False):
+    #     """
+    #     会在这个函数里面对解进行评估。注意solution={depot_i:客户点list}，
+    #     需要按顺序检查电量并且插入充电桩。
+    #     需要检查 “去下一个点+回仓库” 是否足够
+    #
+    #     todo 实现波动。
+    #     input: 解
+    #     output: 解的评估的质量，包含仓库的路径点xy列表。
+    #     """
+    #     total_distance = 0
+    #     visited_plan = {cu: False for p in solution.values() for cu in p}
+    #
+    #     if get_path:
+    #         path = {depot_id: [] for depot_id in range(uav_num)}
+    #
+    #     for depot_id, route in solution.items():
+    #         current_pos = depots_pos[depot_id]  # 初始状态是从仓库出发
+    #         if get_path:
+    #             path[depot_id].append(depots_pos[depot_id])
+    #         battery = BATTERY_CAPACITY  # 满电
+    #
+    #         for tower_id in route:
+    #             distance2c = get_distance(current_pos, tower_pos[tower_id])  # 去下一个点。
+    #             distance2c2depot = distance2c + get_distance(tower_pos[tower_id], depots_pos[depot_id]) #下一个点回自己仓库
+    #
+    #             if battery < distance2c2depot + demands[tower_id]:  # 如果电不够去下一个电塔后再充电桩
+    #                 # 返回仓库充电
+    #                 return_distance = get_distance(current_pos, depots_pos[depot_id]) # 立刻回自己仓库
+    #                 battery -= return_distance
+    #                 if battery < 0:
+    #                     raise ValueError(f"返回仓库的时候 battery {battery}<0 ")
+    #
+    #                 total_distance += return_distance
+    #                 battery = BATTERY_CAPACITY # 恢复满电
+    #                 current_pos = depots_pos[depot_id]
+    #                 if get_path:
+    #                     path[depot_id].append(depots_pos[depot_id])
+    #                 distance2c = get_distance(current_pos, tower_pos[tower_id])
+    #
+    #             total_distance += distance2c
+    #             battery -= (distance2c + demands[tower_id])
+    #             if battery < 0:
+    #                 raise ValueError(f"battery={battery} <0")
+    #             visited_plan[tower_id] = True
+    #             current_pos = tower_pos[tower_id]
+    #             if get_path:
+    #                 path[depot_id].append(tower_pos[tower_id])
+    #         # 返回仓库
+    #         dis2depot = get_distance(current_pos, depots_pos[depot_id])
+    #         total_distance += dis2depot
+    #         battery -= dis2depot
+    #         if battery < 0:
+    #             raise ValueError(f"返回仓库的时候 battery {battery}<0 ")
+    #         if get_path:
+    #             path[depot_id].append(depots_pos[depot_id])
+    #
+    #     if not all(visited_plan.values()):
+    #         print("visited_plan.values(=", visited_plan.values())  # todo 以后大量地图的时候看看会不会报错。
+    #         total_distance = np.inf
+    #
+    #     if get_path:
+    #         return total_distance, path
+    #     else:
+    #         return total_distance
+
     def calculate_cost_path(solution, get_path=False):
         """
         会在这个函数里面对解进行评估。注意solution={depot_i:客户点list}，
-        需要按顺序检查电量并且插入充电桩。【注意！需要检查 “去下一个点+回仓库” 是否足够】
+        需要按顺序检查电量并且插入充电桩。
+        需要检查 “去下一个点+回仓库” 是否足够
 
-        todo 实现波动。
         input: 解
         output: 解的评估的质量，包含仓库的路径点xy列表。
         """
@@ -84,39 +151,49 @@ def VNS_VRP_Problem(MAX_ITER, uav_num, tower_num, position, opt, share_,draw_pat
                 distance2c = get_distance(current_pos, tower_pos[tower_id])  # 去下一个点。
                 distance2c2depot = distance2c + get_distance(tower_pos[tower_id], depots_pos[depot_id]) #下一个点回自己仓库
 
-                if battery < distance2c2depot + demands[tower_id]:  # 如果电不够去下一个电塔后再充电桩
+                if battery < upper_bound * distance2c2depot + demands[tower_id]:  # 如果电不够去下一个电塔后再充电桩 # todo 已波动修改
                     # 返回仓库充电
                     return_distance = get_distance(current_pos, depots_pos[depot_id]) # 立刻回自己仓库
-                    battery -= return_distance
+                    rand_factor = (lower_bound + np.random.rand() * (upper_bound - lower_bound)) # todo 已波动修改【话说写uniform 分布不行吗】
+                    battery -= return_distance * rand_factor#  todo 已波动修改
                     if battery < 0:
                         raise ValueError(f"返回仓库的时候 battery {battery}<0 ")
 
                     total_distance += return_distance
                     battery = BATTERY_CAPACITY # 恢复满电
                     current_pos = depots_pos[depot_id]
+
+
                     if get_path:
                         path[depot_id].append(depots_pos[depot_id])
                     distance2c = get_distance(current_pos, tower_pos[tower_id])
+                    distance2c2depot = distance2c + get_distance(tower_pos[tower_id], depots_pos[depot_id])
+                    if battery < upper_bound * distance2c2depot + demands[tower_id]:
+                        # print("无法出发")
+                        break #如果无法出发：直接break。会因为没访问完城市被标记cost=inf
 
+                rand_factor = (lower_bound + np.random.rand() * (upper_bound - lower_bound))  # todo 已波动修改
                 total_distance += distance2c
-                battery -= (distance2c + demands[tower_id])
+                battery -= (distance2c * rand_factor + demands[tower_id]) # todo 已波动修改
                 if battery < 0:
                     raise ValueError(f"battery={battery} <0")
                 visited_plan[tower_id] = True
                 current_pos = tower_pos[tower_id]
                 if get_path:
                     path[depot_id].append(tower_pos[tower_id])
+
             # 返回仓库
+            rand_factor = (lower_bound + np.random.rand() * (upper_bound - lower_bound))# todo 已波动修改
             dis2depot = get_distance(current_pos, depots_pos[depot_id])
             total_distance += dis2depot
-            battery -= dis2depot
+            battery -= dis2depot * rand_factor # todo 已波动修改
             if battery < 0:
                 raise ValueError(f"返回仓库的时候 battery {battery}<0 ")
             if get_path:
                 path[depot_id].append(depots_pos[depot_id])
 
         if not all(visited_plan.values()):
-            print("visited_plan.values(=", visited_plan.values())  # todo 以后大量地图的时候看看会不会报错。
+            # print("visited_plan.values=", visited_plan.values())
             total_distance = np.inf
 
         if get_path:
@@ -339,7 +416,7 @@ def run_vns_VRP(max_iteration, position_set_, tower_num, uav_num, opt,share_):
         position_set_ = position_set_.numpy()
     position_set_ = position_set_.transpose(0, 2, 1)
     run_time = position_set_.shape[0]
-
+    print(f"数据集大小={run_time}")
     mean_converge_history=np.zeros(max_iteration)
 
 
