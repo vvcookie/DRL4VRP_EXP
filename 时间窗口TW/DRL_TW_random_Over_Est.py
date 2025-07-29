@@ -1464,17 +1464,52 @@ def run_RL_exp(upper_,lower_,share_depot, args):
 
     test_out, test_reward = validate(test_loader, actor, reward, render, test_dir, num_plot=1,
                                      depot_number=args.depot_num)
-    # print("DRL:Average tour length in test set: ", test_out)
-    # reward_greedy = run_greedy_VRP(test_data.static, args.num_city, args.depot_num,share=share_depot)
 
-    # print("\nRun data analysis:")
-    # analysis = data_analysis.Reward_Collect()
-    # analysis.reward_RL=test_reward
-    # analysis.reward_greedy = reward_greedy
-    # analysis.run_analysis()
     return test_reward #, reward_greedy
 
+def run_RL_test_exp(upper_, lower_, share_depot, test_data, args, actor=None):
+    STATIC_SIZE = 2  # (x, y)
+    DYNAMIC_SIZE = 2  # (load, demand)
+    map_size = 1
+    car_load = 2 * map_size * 1.4  # 测试
+    if actor is None:
+        if share_depot:
+            print("Shared depot.")
+            actor = DRL4TSP(STATIC_SIZE,DYNAMIC_SIZE,args.hidden_size,
+                            car_load,args.depot_num,
+                            update_dynamic_shared,update_mask_shared_TW,node_distance_shared,
+                            args.num_layers,args.dropout,upper_, lower_, ).to(device)
+        else:
+            print("Not Shared depot.")
+            actor = DRL4TSP(STATIC_SIZE,DYNAMIC_SIZE,args.hidden_size,car_load,
+                            args.depot_num,update_dynamic_independent,update_mask_independent_TW,
+                            node_distance_independent,
+                            args.num_layers,args.dropout,upper_, lower_, ).to(device)
 
+        if args.checkpoint:  # 读取之前保存的模型。
+            print(f"args.checkpoint:已经有ckpt,读取:{args.checkpoint}")
+            path = os.path.join(args.checkpoint, 'actor.pt')
+            actor.load_state_dict(torch.load(path, device))  # load_state_dict：加载模型参数
+        else:
+            raise ValueError("No args.checkpoint：模型从0初始化。")
+
+    print(f"T={args.num_city} UAV={args.depot_num} RL over开始测试：args.valid_size={args.valid_size}")
+    if share_depot:
+        test_dir = 'test_picture_shared'
+    else:
+        test_dir = 'test_picture'
+
+    test_loader = DataLoader(test_data, args.batch_size, False, num_workers=0)
+    import time
+    start_time = time.time()
+    test_out, test_reward = validate(test_loader, actor, reward, render, test_dir, num_plot=1,
+                                     depot_number=args.depot_num)
+    end_time = time.time()
+    total_time = round(end_time - start_time, 4)
+    avg_time = round(total_time / args.valid_size, 4)
+    print(f"RL_over T{args.num_city} uav{args.depot_num} 总运行时间{total_time}s。平均一图时间：{avg_time}s")
+
+    return test_reward,avg_time
 
 if __name__ == '__main__':
     # 命令行参数解析器对象 parser.参数是按顺序的。。。。

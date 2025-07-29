@@ -1862,8 +1862,8 @@ def run_fail_test(share_depot, args):
     # todo 开始测试坠机率---------------------------------------------------------
     print(f"开始测试坠机率！！args.valid_size={args.valid_size}")
 
-    tower_num_list=list(range(180,201,10))
-    depot_num_list=list(range(5,15))
+    tower_num_list=list(range(40,201,40))
+    depot_num_list=list(range(4,21,4))
     print(f"tower_num_list={tower_num_list}")
     print(f"depot_num_list={depot_num_list}")
 
@@ -1897,7 +1897,7 @@ def run_fail_test(share_depot, args):
         txt+= f"{str(city_num)}," + ",".join(map(str, list(prob_res))) + "\n"
         print(txt)
 
-    fail_stat_filename = (f"{upper}-{lower}坠机率统计[{tower_num_list[0]},{tower_num_list[-1]}]T"
+    fail_stat_filename = (f"share={str(share_depot)} {upper}-{lower}坠机率统计[{tower_num_list[0]},{tower_num_list[-1]}]T"
                           + f"[{depot_num_list[0]},{depot_num_list[-1]}]UAV.csv")
     # 把txt写入csv
     with open(os.path.join(fail_stat_filename), "w") as f:

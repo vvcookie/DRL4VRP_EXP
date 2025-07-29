@@ -1,26 +1,20 @@
 import random
-
 import matplotlib.pyplot as plt
 import numpy as np
 
-from TW_Baseline.草稿 import calculate_cost_path_share
-
-
 # todo：添加注释、检查约束是否正确、调整为我的问题的约束、
-# todo 写share!!!！
 # todo: 嵌入对比代码!!!!和greedy速速比较（注意随机种子
 # todo 统计指标的对比、输出format
-# todo share 和indepoent 合并。
 
-def VNS_VRP_Problem(MAX_ITER, uav_num, tower_num, position, opt, share_,draw_path):
+def VNS_VRP_Problem(MAX_ITER, uav_num, tower_num, position, upper, lower, opt, share_,draw_path,initialG=False):
     # 参数设置
     BATTERY_CAPACITY = 2.8  # 电池容量
     # DEMAND_RANGE = (0.1, 0.2)  # 需求范围
-    DEMAND=0.1
+    TOWER_DEMAND=0.1
     SHAKE_STRENGTH = 3  # 扰动强度（交换客户次数）
-    upper_bound = 1.1
-    lower_bound = 0.9
-
+    upper_bound = upper
+    lower_bound = lower
+    DEPOT_NEED = 0.1
 
 
     # 随机生成客户和仓库坐标（地图1x1）
@@ -29,13 +23,24 @@ def VNS_VRP_Problem(MAX_ITER, uav_num, tower_num, position, opt, share_,draw_pat
 
     # demands = {i: round(random.uniform(*DEMAND_RANGE), 2) for i in tower_pos} # 动态的需求版本
     # print("动态的需求！")
-    demands = {i: DEMAND for i in tower_pos}  # 静态的需求版本
+    demands = {i: TOWER_DEMAND for i in tower_pos}  # 静态的需求版本
     print("静态的需求！")
 
+    # dis_matrix=
+    dis_dict={}
     # 计算距离矩阵
     def get_distance(a, b):
-        return np.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2)
-
+        id = (a[0],a[1],b[0],b[1])
+        id2 = (b[0],b[1],a[0],a[1])
+        if id in dis_dict:
+            return dis_dict[id]
+        elif id2 in dis_dict:
+            return dis_dict[id2]
+        else:
+            dis = np.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2)
+            dis_dict[id]=dis
+        # 不行这个是计算两个具体坐标的函数。
+        return dis
     # 初始化解：每个仓库分配一辆车，随机分配客户
     def initial_solution():
         solution = {depot_id: [] for depot_id in depots_pos}
@@ -50,9 +55,37 @@ def VNS_VRP_Problem(MAX_ITER, uav_num, tower_num, position, opt, share_,draw_pat
             solution[depot_id] = customer_list[start:end]
         return solution
 
-    def shake(solution, k):
+    def initial_greedy_solution():
+        # todo 调用一下greedy的接口呃。但是这样跑出来。。是有仓库的呢。而且下标单位不统一。
+        # 让greedy首先剔除前 uav num 个。然后统一shift -uav num？？（或者直接减去之后，删掉<0的！！
+        from 时间窗口TW.Greedy_VRP_TW_random import Greedy_VRP_Problem
+        from 时间窗口TW.Greedy_VRP_TW_random import plot_track
+        # all_tower_track_id 是{uav_id: list[tower id] }
+        greedy_reward,tower_id_track=Greedy_VRP_Problem(tower_num, uav_num, position, upper, lower, share_,
+                                                   tower_demand=None, get_tower_trake=True)
+
+        print(f"greedy_初始解reward={greedy_reward}")
+        # print(f"greedy_tower_id_track={tower_id_track}")
+        # test : 注意这里是share函数。
+        if share_:
+            best_cost, VNS_best_solution = calculate_cost_path_share(tower_id_track, get_path=True)
+            print(f"VNS计算的初始解计算总cost：{best_cost}")
+            # print(f"VNS_初始解 track:{VNS_best_solution}") # 呃是二维坐标。。。
+
+            # plot_track(tower_num,uav_num,share_,list(VNS_best_solution.values()), best_cost, "VNS_GIF")  # 画出本地图的动态图。
+            # raise ValueError("test")
+        else:
+            raise ValueError("还没写非share")
+
+        return tower_id_track
+
+
+    def shake(solution, shake_level):
+        """
+        shake_level:扰动强度。
+        """
         new_solution = {key: v.copy() for key, v in solution.items()}
-        for _ in range(k):
+        for _ in range(shake_level):
             # 随机选择两个仓库的两个客户，交换
             depot1, depot2 = random.sample(list(new_solution.keys()), 2)
             if len(new_solution[depot1]) == 0 or len(new_solution[depot2]) == 0:
@@ -89,11 +122,11 @@ def VNS_VRP_Problem(MAX_ITER, uav_num, tower_num, position, opt, share_,draw_pat
                 distance2c = get_distance(current_pos, tower_pos[tower_id])  # 去下一个点。
                 distance2c2depot = distance2c + get_distance(tower_pos[tower_id], depots_pos[depot_id]) #下一个点回自己仓库
 
-                if battery < upper_bound * distance2c2depot + demands[tower_id]:  # 如果电不够去下一个电塔后再充电桩 # todo 已波动修改
+                if battery < upper_bound * distance2c2depot + demands[tower_id]:  # 如果电不够去下一个电塔后再充电桩 #已波动修改
                     # 返回仓库充电
                     return_distance = get_distance(current_pos, depots_pos[depot_id]) # 立刻回自己仓库
-                    # rand_factor = (lower_bound + np.random.rand() * (upper_bound - lower_bound)) # todo 已波动修改
-                    battery -= return_distance * upper_bound#  todo 已波动修改
+                    # rand_factor = (lower_bound + np.random.rand() * (upper_bound - lower_bound))
+                    battery -= return_distance * upper_bound #  已波动修改
                     if battery < 0:
                         raise ValueError(f"返回仓库的时候 battery {battery}<0 ")
 
@@ -110,9 +143,9 @@ def VNS_VRP_Problem(MAX_ITER, uav_num, tower_num, position, opt, share_,draw_pat
                         # print("无法出发")
                         break #如果无法出发：直接break。会因为没访问完城市被标记cost=inf
 
-                # rand_factor = (lower_bound + np.random.rand() * (upper_bound - lower_bound))  # todo 已波动修改
+                # rand_factor = (lower_bound + np.random.rand() * (upper_bound - lower_bound))
                 total_distance += distance2c
-                battery -= (distance2c * upper_bound + demands[tower_id]) # todo 已波动修改
+                battery -= (distance2c * upper_bound + demands[tower_id]) # 已波动修改
                 if battery < 0:
                     raise ValueError(f"battery={battery} <0")
                 visited_plan[tower_id] = True
@@ -121,10 +154,10 @@ def VNS_VRP_Problem(MAX_ITER, uav_num, tower_num, position, opt, share_,draw_pat
                     path[depot_id].append(tower_pos[tower_id])
 
             # 返回仓库
-            # rand_factor = (lower_bound + np.random.rand() * (upper_bound - lower_bound))# todo 已波动修改
+            # rand_factor = (lower_bound + np.random.rand() * (upper_bound - lower_bound))
             dis2depot = get_distance(current_pos, depots_pos[depot_id])
             total_distance += dis2depot
-            battery -= dis2depot * upper_bound # todo 已波动修改
+            battery -= dis2depot * upper_bound #  已波动修改
             if battery < 0:
                 raise ValueError(f"返回仓库的时候 battery {battery}<0 ")
             if get_path:
@@ -203,7 +236,6 @@ def VNS_VRP_Problem(MAX_ITER, uav_num, tower_num, position, opt, share_,draw_pat
         while True: #先不写停止标准
             # 排序
             decision_order.sort(key=lambda x:x[1])
-            # print(f"decision_order={decision_order}")
             uav_id, now = decision_order.pop(0)
             if now == np.inf: # 说明所有无人机都回到仓库了。
                 # print("结束了捏")
@@ -222,7 +254,7 @@ def VNS_VRP_Problem(MAX_ITER, uav_num, tower_num, position, opt, share_,draw_pat
                 empty_depots=get_empty_depot(current_pos,in_depot)
                 depot_id = empty_depots[0][0]  #选最近的空depot id
                 return_distance = empty_depots[0][1]
-                battery -= return_distance * upper_bound  # todo 已波动修改
+                battery -= return_distance * upper_bound  #已波动修改
                 total_distance += return_distance
                 if battery < 0:
                     raise ValueError(f"返回仓库的时候 battery {battery}<0 ")
@@ -242,7 +274,7 @@ def VNS_VRP_Problem(MAX_ITER, uav_num, tower_num, position, opt, share_,draw_pat
                 c2farthest = get_farthest_depot(tower_pos[tower_id])
                 distance2c2depot = distance2c + c2farthest #下一个点回最远仓库
 
-                if battery < upper_bound * distance2c2depot + demands[tower_id]:  # 如果电不够去下一个电塔后再充电桩 # todo 已波动修改
+                if battery < upper_bound * distance2c2depot + demands[tower_id]:  # 如果电不够去下一个电塔后再充电桩 #已波动修改
                     if in_depot[uav_id] is not False:
                         # print("明明在充电桩但是却不能出发……")
                         total_distance = np.inf
@@ -252,7 +284,7 @@ def VNS_VRP_Problem(MAX_ITER, uav_num, tower_num, position, opt, share_,draw_pat
                     empty_depots = get_empty_depot(current_pos, in_depot)
                     depot_id = empty_depots[0][0]  # 选最近的depot id
                     return_distance = empty_depots[0][1]
-                    battery -= return_distance * upper_bound #  todo 已波动修改
+                    battery -= return_distance * upper_bound #  已波动修改
                     if battery < 0:
                         raise ValueError(f"返回仓库的时候 battery {battery}<0 ")
                     total_distance += return_distance
@@ -263,10 +295,10 @@ def VNS_VRP_Problem(MAX_ITER, uav_num, tower_num, position, opt, share_,draw_pat
                     # current_tour_p[uav_id] += 1 # 这个不变
                     in_depot[uav_id] = depot_id
                     remain_battery[uav_id] = battery
-                    decision_order.append((uav_id, now+ return_distance * upper_bound))
+                    decision_order.append((uav_id, now+ return_distance * upper_bound+ DEPOT_NEED))
 
                 else: # 是电量足够直接去下一个电塔。
-                    battery -= distance2c * upper_bound  # todo 已波动修改
+                    battery -= distance2c * upper_bound  #  已波动修改
                     if battery < 0:
                         raise ValueError(f"返回仓库的时候 battery {battery}<0 ")
                     total_distance += distance2c
@@ -277,7 +309,7 @@ def VNS_VRP_Problem(MAX_ITER, uav_num, tower_num, position, opt, share_,draw_pat
                     in_depot[uav_id] = False
                     visited_plan[tower_id] = True
                     remain_battery[uav_id] = battery
-                    decision_order.append((uav_id, now + distance2c * upper_bound))
+                    decision_order.append((uav_id, now + distance2c * upper_bound+demands[tower_id]))
 
         if not all(visited_plan.values()):
             # print("visited_plan.values=", visited_plan.values())
@@ -287,6 +319,8 @@ def VNS_VRP_Problem(MAX_ITER, uav_num, tower_num, position, opt, share_,draw_pat
             return total_distance, path
         else:
             return total_distance
+
+
     # 2-opt局部优化
     def two_opt(route, depot_id,cost_path_fun):
         best = route
@@ -413,8 +447,6 @@ def VNS_VRP_Problem(MAX_ITER, uav_num, tower_num, position, opt, share_,draw_pat
             print(f"picture save as {title}")
         plt.show()
 
-
-
     def vns():
 
         if share_:
@@ -422,18 +454,23 @@ def VNS_VRP_Problem(MAX_ITER, uav_num, tower_num, position, opt, share_,draw_pat
         else:
             calculate_cost_path_fun = calculate_cost_path_independent
 
-        opt_function=[]
+        operator_function=[]
         if 2 in opt:
-            opt_function.append(two_opt)
+            operator_function.append(two_opt)
         elif 3 in opt :
-            opt_function.append(three_opt)
+            operator_function.append(three_opt)
 
-        current_solution = initial_solution()
+        current_solution=None
+        if not initialG:
+            current_solution = initial_solution()
+        else:
+            print("测试greedy作为初始解中……")
+            current_solution = initial_greedy_solution()
+            # raise ValueError("测试greedy中")
+
         best_solution = {key: v.copy() for key, v in current_solution.items()}
-        best_cost=calculate_cost_path_fun(best_solution)
+        best_cost = calculate_cost_path_fun(best_solution)
         cost_history = []
-
-
 
 
         for t in range(MAX_ITER):
@@ -452,7 +489,7 @@ def VNS_VRP_Problem(MAX_ITER, uav_num, tower_num, position, opt, share_,draw_pat
                     # shaken_solution[depot_id] = two_opt(shaken_solution[depot_id], depot_id) #  2 OPT
                     # shaken_solution[depot_id] = three_opt(shaken_solution[depot_id], depot_id)# 3 OPT
 
-                    for opt_fun in opt_function: # 遍历operator
+                    for opt_fun in operator_function: # 遍历operator
                         shaken_solution[depot_id] = opt_fun(shaken_solution[depot_id], depot_id,calculate_cost_path_fun)
 
                 current_cost = calculate_cost_path_fun(current_solution)
@@ -502,43 +539,52 @@ def multi_converge_visualize(datasize, uav_num,tower_num,opt,share_,history_, me
         print(f"picture save as {title}")
     plt.show()
 
-def run_VNS_vrp(max_iteration, position_set_, tower_num, uav_num, opt, share_):
+def run_VNS_vrp(max_iteration, position_set_, tower_num, uav_num,upper, lower, opt, share_,initialG=False):
     """
     适用于一次性运行n个VNS算法VRP问题实例。是用于把RL的数据集传进来训练的接口。
     position_set: 为多个地图的集合。
     """
     print("Run VNS set:")
     print(f"max_iteration={max_iteration}")
-    print(f"SHARE={share_}")
-    print(f"uav num={uav_num}\ntower_num={tower_num}")
+    print(f"uav num={uav_num}, tower_num={tower_num}")
+    print(f"upper bound={upper}, lower bound={lower}")
     print(f"opt function={opt}")
+    print(f"SHARE={share_}")
+
     cost_set = []
 
     if type(position_set_) is not np.ndarray:
         position_set_ = position_set_.numpy()
     position_set_ = position_set_.transpose(0, 2, 1)
-    run_time = position_set_.shape[0]
-    print(f"数据集大小={run_time}")
+    data_size = position_set_.shape[0]
+    print(f"数据集大小={data_size}")
     mean_converge_history=np.zeros(max_iteration)
 
-
-    for t in range(run_time):
+    import time
+    # 开始计时
+    start_time = time.time()
+    for t in range(data_size):
         position = position_set_[t]  # 使用外界传进来的坐标
         print(f"地图样本{t}:",end="")
         cost, solution, converge_history = VNS_VRP_Problem(max_iteration, uav_num, tower_num, position,
-                                                           opt=opt, share_=share_,
-                                                           draw_path= False if run_time > 1 else True)
+                                                           upper, lower, opt=opt, share_=share_,
+                                                           draw_path= False if data_size > 1 else True,
+                                                           initialG=initialG)
         cost_set.append(cost)
         mean_converge_history+=np.array(converge_history)
+    end_time = time.time()
+    total_time = round(end_time-start_time,4)
+    avg_time=round( total_time / data_size, 2)
+    print(f"VNS T{tower_num} uav{uav_num} 总运行时间{total_time}s。平均一图时间：{avg_time}s")
 
-    if run_time>1:
-        mean_converge_history/=run_time
-        mean_cost= sum(cost_set) / run_time
-        multi_converge_visualize(run_time,uav_num,tower_num, opt,share_,
+    if data_size>1:
+        mean_converge_history/=data_size
+        mean_cost= sum(cost_set) / data_size
+        multi_converge_visualize(data_size,uav_num,tower_num, opt,share_,
                                  mean_converge_history,mean_cost,save=False)
 
     # average_reward = sum(reward_set) / run_time
-    return cost_set
+    return cost_set,avg_time
 
 
 import sys
@@ -552,15 +598,18 @@ def progress_bar(finish_tasks_number, tasks_number):
 
 # 主程序
 if __name__ == "__main__":
-    max_iter=10 # VNS 迭代次数。
-    run_times=1
+    max_iter=100 # VNS 迭代次数。
+    run_times=2
     tower_n=50
-    uav_n=5
-    share=True
+    uav_n=10
+    share = True
+    upper, lower= 1.1,0.9
     opt_function=[2,3]
     np.random.seed(123) # todo 随机种子！！方便debug。
     position_set = np.random.random(size=(run_times, 2, tower_n + uav_n))
 
     # 一次性运行多个地图实例。
-    cost_set = run_VNS_vrp(max_iter, position_set, tower_n, uav_n, opt=opt_function, share_= share)
+    cost_set,avg_time = run_VNS_vrp(max_iter, position_set, tower_n, uav_n, upper, lower,opt=opt_function, share_= share)
     print(f"Run {run_times} times. VNS Average tour length: {np.mean(cost_set)}")
+    # print(f"VNS T{tower_n} uav{uav_n}平均一图时间：{avg_time}s")
+

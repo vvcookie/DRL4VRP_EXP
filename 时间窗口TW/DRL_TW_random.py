@@ -51,6 +51,8 @@ class Encoder(nn.Module):
         return output  # (batch, hidden_size, seq_len)
 
 
+
+
 class Attention(nn.Module):
     """Calculates attention over the input nodes given the current state."""
 
@@ -58,7 +60,7 @@ class Attention(nn.Module):
         super(Attention, self).__init__()
 
         # W processes features from static decoder elements
-        self.W = nn.Parameter(torch.zeros((1, hidden_size, 3 * hidden_size),  # (1,H,3H)×(B,3H,L)=(B,H,L)
+        self.W = nn.Parameter(torch.zeros((1, hidden_size, 3 * hidden_size),  # (1,H,3H)
                                           device=device, requires_grad=True))
 
         self.v = nn.Parameter(torch.zeros((1, 1, hidden_size),
@@ -73,7 +75,7 @@ class Attention(nn.Module):
         # Broadcast some dimensions so we can do batch-matrix-multiply
         # 为了能够和batch进行相乘，进行expand操作。expand的参数是目标size，是以复制填充的方式实现的。
         v = self.v.expand(batch_size, 1, hidden_size)  # B,1,H
-        W = self.W.expand(batch_size, hidden_size, -1)  # B,H,L
+        W = self.W.expand(batch_size, hidden_size, -1)  #(B,H,3H)
 
         attns = torch.bmm(v, torch.tanh(torch.bmm(W, hidden)))
         attns = F.softmax(attns, dim=2)  # (batch, seq_len)=(B,L)=注意力a
@@ -228,26 +230,19 @@ class DRL4TSP(nn.Module):
 
         #----------TW start--------------
         car_seq_order = self.get_init_order(batch_size, self.depot_num)
-        car_id_tw = self.get_next_car_id(car_seq_order)  #.detach() # todo为什么要用tensor！
+        car_id_tw = self.get_next_car_id(car_seq_order)  #.detach()
         car_load_tw = [[self.car_load] * self.depot_num for _ in range(batch_size)]  #list,(B,car_num)
         # ----------TW end--------------
 
         # 给每个无人机tour里记录。
         #----------TW start--------------
-        tour_idx_tw = [[[i] for i in range(self.depot_num)] for _ in range(batch_size)]  # todo 已修改TW: (B,num_car,)
+        tour_idx_tw = [[[i] for i in range(self.depot_num)] for _ in range(batch_size)]  #  (B,num_car,)
         # print(f"tour_idx_tw={tour_idx_tw}")
         # ----------TW end--------------
 
         # # 最终的访问序列的logp
-        tour_logp = []  # todo 修改格式
+        tour_logp = []
         last_hh_home = [[torch.zeros(128) for _ in range(self.depot_num)] for _ in range(batch_size)]  # todo 改掉常数
-
-        # ptr 大小B 1。ptr更新！！！更新为下一个无人机的当前位置。
-        # ptr = tour_idx[0][-1].clone().detach()  # B，1第0辆无人机的当前位置tensor。
-        # ----------TW start--------------
-        # ptr_tw = torch.tensor([tour_idx_tw[b][car_id_tw[b]] for b in range(batch_size)],dtype=torch.int64)
-        # todo： 已修改成使用car_id来选取当前点（虽然初始是0）【已删除，移到下面】
-        # ----------TW end--------------
 
         max_steps = sequence_size if self.mask_fn is None else 2 * num_nodes  # 如果设置mask函数，为了避免死循环，这是最大步数。
         static_hidden = self.static_encoder(static)  # 只需要计算一次
@@ -264,7 +259,6 @@ class DRL4TSP(nn.Module):
                 # ----------TW start--------------
                 mask_tw = self.mask_fn(self.depot_num, dynamic, distance, ptr_tw.data, car_id_tw,
                                        self.est_upper).detach()
-                # todo 已修改。使用的mask fn是后缀TW的update mask
                 # ----------TW end--------------
 
             if not mask_tw.byte().any():  # 如果全mask掉了就退出
@@ -274,7 +268,7 @@ class DRL4TSP(nn.Module):
             #                              .to(dynamic.device)).detach()  # 更新当前位置信息。
             # ----------TW start--------------
             decoder_input_tw = torch.gather(static, 2, ptr_tw.view(-1, 1, 1).expand(-1, input_size, 1)
-                                            .to(dynamic.device)).detach()  # todo 好像这个语句是不用改的。
+                                            .to(dynamic.device)).detach()
             # ----------TW end--------------
 
             dynamic_hidden = self.dynamic_encoder(dynamic)  # 编码当前动态信息
@@ -288,18 +282,14 @@ class DRL4TSP(nn.Module):
                 print(f"已分配显存:{allocated / (1024 ** 2)} MB")
                 print(f"保留显存:{reserved / (1024 ** 2)}MB")
 
-            # fixme 250211修改隐状态--------------
             last_hh = torch.stack([last_hh_home[b][car_id_tw[b]] for b in range(batch_size)]).unsqueeze(0).to(
                 dynamic.device)  # 大小是1 B，128
-            # fixme 250211修改隐状态--------------
 
             # 指针网络。里面包含GRU
             probs, last_hh = self.pointer(static_hidden, dynamic_hidden, decoder_hidden,
                                           last_hh)  # 得到下一个点的（未mask）概率分布和隐状态。
-            # fixme 250211修改隐状态--------------
             for b in range(batch_size):
                 last_hh_home[b][car_id_tw[b]] = last_hh[0][b]  # last hh：(1，B，128)
-            # fixme 250211修改隐状态--------------
 
             probs = F.softmax(probs + mask_tw.log(),
                               dim=1)  # mask操作+softmax Softmax的原因：因为π(a,s)是必须大于0的，用softmax把0映射成很小的数字
@@ -326,12 +316,6 @@ class DRL4TSP(nn.Module):
             # 选择好了下一个访问的点，访问，更新动态信息。
             if self.update_fn is not None:
 
-                # 获取当前位置
-                #last_visited = tour_idx[car_id][-1] # 这个是当前位置的意思。
-                # ----------TW start--------------
-                # last_visited_tw=ptr_tw  #之前什么鬼bug啊啊！！！干嘛要修改ptr的含义！ # todo之后直接把ptr和last_visited_tw名字统一为cur_pos
-                # ----------TW end--------------
-
                 dynamic, next_dis = self.update_fn(self.depot_num, self.car_load, dynamic, distance, action.data,
                                                    ptr_tw, self.est_upper, self.est_lower)
 
@@ -347,32 +331,30 @@ class DRL4TSP(nn.Module):
                 is_done = dynamic[:, 1].sum(1).eq(0).float()  # 如果所有点的需求加和=0，就说明done
                 logp = logp * (1. - is_done)  # 如果完成了，logp 也是0, 梯度就不会更新了
 
-                # todo--------------此处插入next car id 更新--------------------------
-                self.update_task_complete_order(car_seq_order, next_dis)  # todo 还得加上充电桩充电时间。(目前是is depot*0.1）
+                self.update_task_complete_order(car_seq_order, next_dis)
                 next_car_id = self.get_next_car_id(car_seq_order)  # 更新。
-                # todo--------------此处插入next car id 更新--------------------------
 
                 # 替换dynamic里的load！把load换成下一个无人机的load，但demand继承。
                 # dynamic[:, 0] = car_load[(car_id + 1) % self.depot_num].unsqueeze(1).expand(-1, num_nodes)
                 # ----------TW start--------------
                 for b in range(batch_size):
                     dynamic[b, 0] = torch.tensor(car_load_tw[b][next_car_id[b]]).unsqueeze(0).expand(num_nodes)
-                    # todo 已修改
+
                 # ----------TW end--------------
 
-            tour_logp.append(logp.unsqueeze(1))  # 每个时间t都要储存：因为为了计算整条路径出现的概率. T B 1 # todo 似乎不用变。但是之后uav goal就要了。
+            tour_logp.append(logp.unsqueeze(1))  # 每个时间t都要储存：因为为了计算整条路径出现的概率. T B 1
 
             # tour_idx[car_id].append(action.data.unsqueeze(1))  # T B 1 把当前无人机的新访问的点保存起来。
             # ----------TW start--------------
             for b in range(batch_size):
                 tour_idx_tw[b][car_id_tw[b]].append(action[b].item())  # B T 1 把当前无人机的新访问的点保存起来。
-            # print(f"tour_idx_tw={tour_idx_tw}") # todo 已修改.
+            # print(f"tour_idx_tw={tour_idx_tw}")
             # ----------TW end--------------
 
             # 车辆序号更新
             # car_id = (car_id + 1) % self.depot_num
             # ----------TW start--------------
-            car_id_tw = next_car_id  # todo 修改完毕。但是其实应该提前
+            car_id_tw = next_car_id
             # ----------TW end--------------
 
         else:
@@ -392,8 +374,8 @@ class DRL4TSP(nn.Module):
             raise ValueError("仍然有需求尚未满足")
 
         # tour_idx 大小：最外层是list，包含num depot 个元素，每个元素是batch*无人机飞行过node个数。
-        # tour_idx = [torch.cat(tour_idx[i], dim=1) for i in range(self.depot_num)]  # 包含了每一辆无人机的轨迹 # todo 修改格式
-        tour_logp = torch.cat(tour_logp, dim=1)  # (batch_size, seq_len) # todo 似乎不用变。但是之后uav goal就要了。
+        # tour_idx = [torch.cat(tour_idx[i], dim=1) for i in range(self.depot_num)]  # 包含了每一辆无人机的轨迹
+        tour_logp = torch.cat(tour_logp, dim=1)  # (batch_size, seq_len)
         # ----------TW start--------------
         # 现在的tour_idx_tw是B，depot_num 的嵌套list (而且大家的tour长度不一样……）
         tour_per_uav = []
@@ -429,12 +411,12 @@ class DRL4TSP(nn.Module):
     def update_task_complete_order(self, order, next_point_dis):
         '''
         order：(B,CAR_NUM)的列表，元素是二元组。
-        next_point_dis:去往下一个点的距离list (B,1) todo到时候是tensor怎么办？   (B,)也行但是函数要改一下
+        next_point_dis:去往下一个点的距离list (B,1)
         '''
         # 根据刚刚选择的点，更新时间戳。(直接把所需要的时间叠加到原来的时间上就可得到timestamp
         for sample, dis in zip(order, next_point_dis):
             next_car = sample.pop(0)
-            sample.append((next_car[0], next_car[1] + dis))  # todo ：修改了：使用item
+            sample.append((next_car[0], next_car[1] + dis))
             # # 排序
             sample.sort(key=lambda tup: tup[1])  # sorts in place
         # print("order",order)
@@ -511,7 +493,7 @@ class VehicleRoutingDataset(Dataset):
 def node_distance_shared(static, num_depots):
     '''
     是【完全共享仓库】版本.（可以在别人的仓库充电、最终停放）
-    todo 修改了：目前版本是返回【点a-点b-点b最【远】的仓库】因为存在最近仓库被占用的情况。
+    修改了：目前版本是返回【点a-点b-点b最【远】的仓库】因为存在最近仓库被占用的情况。
     static的维度:应该是B，2，num_depots+num_city
     '''
     depot_positions = static[:, :, :num_depots]  # 维度应该是B，2，num_depots
@@ -675,7 +657,7 @@ def update_dynamic_shared(num_depots, max_car_load, dynamic, distance, next_idx,
     # -----------测试把上一个访问节点是仓库的时候，条件扩展为"当前访问节点可以是任何点（即允许连续两次访问仓库）
     # 使用布尔索引来找出当先处在仓库的样本
     # is_depot = last_visited.lt(self.num_depots).to('cuda')
-    depot_visited_idx = current_idx.lt(num_depots).to(dynamic.device)  # todo debug 中。。。。。。
+    depot_visited_idx = current_idx.lt(num_depots).to(dynamic.device)
 
     # depot_visited_idx = is_depot # 找出同时访问城市且上一次访问的是仓库的样本（不用了，需要可以连续访问仓库）
 
@@ -723,7 +705,7 @@ def node_distance_independent(static, num_depots):
     """
     static: 所有点（包括仓库和tower）的坐标
     num_depots: 没有用，是为了对齐node_distance_shared 的参数。
-    本函数：返回每个点到另一个点之间的距离。【0219 todo omg什么时候改过来的！！对应函数没问题吗！！】
+    本函数：返回每个点到另一个点之间的距离。
     之前的版本：return 的维度是B，num_node+1,num_node.属于是强行在第二个维度的最后面上添加了一个大小为num_node的矩阵……
     所以返回值的[b][-1][i]表示在第b个batch里面，第i个node离最近的仓库的距离。（如果第i是仓库则距离=0）
     """
@@ -785,7 +767,6 @@ def update_mask_independent_TW(num_depots, dynamic, n2n_distance, current_idx, c
     new_mask[:, :num_depots] = 0
     # 然后判断让不在仓库的可以回到自己的仓库。
     in_city = (current_idx >= num_depots)
-    # new_mask[in_city.squeeze(), car_id] = 1 # todo 修改如下
     for b in range(n2n_distance.size(0)):
         if in_city[b]:
             new_mask[b, car_id[b]] = 1
@@ -859,31 +840,29 @@ def update_dynamic_independent(num_depots, max_car_load, dynamic, n2n_distance, 
     # 在batch中 - 如果我们下一个点选择访问一个城市：
     if visit.any():
         # 上一次选择的节点与这次选择的节点的差值
-        check_load = load - demand - distance  # todo 给demand
+        check_load = load - demand - distance
         if (check_load < 0).any():
             print(check_load)
             raise ValueError("Error: 存在负载为负数.")
 
         new_load = torch.clamp(check_load, min=0)  # 当前负载-下一个点需求-路程损耗
-        del check_load  # todo 新增解决OOM
+        del check_load
 
         check_demand = demand - load + distance  # 下一个点需求减去车辆走路后的负载。
         if (check_demand > 0).any():
             raise ValueError("Error:无法满足下一个城市的需求。")  # 注意只有需求无法分割的时候，这个报错才是必要的
         new_demand = torch.clamp(check_demand, min=0)
-        del check_demand  # todo 新增解决OOM
+        del check_demand
         # 将载重量广播到所有节点，但单独更新需求量
         visit_idx = visit.nonzero().squeeze()
-        del visit  # todo 新增解决OOM
+        del visit
 
         all_loads[visit_idx] = new_load[visit_idx]
         all_demands[visit_idx, next_idx[visit_idx]] = new_demand[visit_idx].view(-1)
-        del new_load  # todo 新增解决OOM
-        del new_demand  # todo 新增解决OOM
+        del new_load
+        del new_demand
 
     #  dynamic会标记仓库是非空（-1空、0非空），所以update的时候，如果无人机离开仓库（当前点=仓库），就要更新该仓库demand
-
-    # depot_visited = # todo 压缩，解决OOM
 
     # depot_visited_idx是【数组下标】不是城市序号！！
     depot_visited_idx = current_idx.lt(num_depots).to(dynamic.device).nonzero().squeeze()
@@ -893,7 +872,7 @@ def update_dynamic_independent(num_depots, max_car_load, dynamic, n2n_distance, 
     all_demands[depot_visited_idx.to(dynamic.device), current_idx.to(dynamic.device)[
         depot_visited_idx]] = -1.  # + new_load[depot_visited_idx].reshape(-1,2)
 
-    del depot_visited_idx  # todo 新增解决OOM
+    del depot_visited_idx
     # 在batch中 - 如果我们下一个选择访问一个仓库，则load回满，仓库的demand标记为0
     # if depot.any():
     #     all_loads[depot.nonzero().squeeze()] = 1.
@@ -912,11 +891,10 @@ def update_dynamic_independent(num_depots, max_car_load, dynamic, n2n_distance, 
     # 把load和demand拼接会dynamic
     new_dynamic = torch.cat((all_loads.unsqueeze(1), all_demands.unsqueeze(1)), 1)
 
-    task_time = (torch.clamp(demand, min=0) + distance).squeeze() + depot * 0.1  #.tolist() # todo 添加充电时间。现在是临时的值。
-    # todo 测试让留在仓库的task time无限长。
+    task_time = (torch.clamp(demand, min=0) + distance).squeeze() + depot * 0.1 #.tolist() # todo 添加充电时间。现在是临时的值。
     task_time[stay] = torch.inf
     task_time = task_time.tolist()
-    del distance  # todo 新增解决OOM
+    del distance
     return new_dynamic.clone().detach().to(device=dynamic.device), task_time  # 避免额外的计算开销和不必要的内存使用
 
 
@@ -951,8 +929,160 @@ def reward(static, tour_indices):  # 这个是旧的reward，,depot_number参数
     total_distance = total_len_tensor.sum(0)  # 大小(B,),是把同一个Batch内部，所有飞机的总路程秀禾。
     return total_distance
 
-
 def render(static, tour_indices, num_depots, save_path):
+    """Optimized UAV path visualization for academic papers (JPG output)"""
+
+
+    # Initialize with journal-compliant settings
+    plt.close('all')
+    plt.style.use('seaborn-whitegrid')
+
+    # Create figure with JPG-specific settings
+    fig = plt.figure(figsize=(6, 6), dpi=300)  # 300dpi for high-res JPG
+    ax = fig.add_subplot(111)
+    ax.set_aspect('equal')  # 关键！强制1:1比例
+    # IEEE-approved color palette (JPG-safe)
+    colors = [
+        '#005CAB',  # Deep blue (Pantone 2945)
+        '#E31937',  # Academic red (Pantone 185)
+        '#5D9732',  # Research green (Pantone 362)
+        '#FFD600',  # Gold yellow (Pantone 108)
+        '#823B00',  # Brown (Pantone 1615)
+        '#A71930',  # Burgundy (Pantone 202)
+        '#4B92DB'  # Light blue (Pantone 279)
+    ]
+    colors = [
+        # 原始10色保留（顺序优化）
+        'firebrick',  # 替换red为更专业的firebrick
+        'dodgerblue',  # 替换blue为更醒目的dodgerblue
+        'limegreen',  # 替换green为更亮的limegreen
+        'darkorange',
+        'mediumpurple',  # 替换purple为更柔和的mediumpurple
+        'gold',  # 替换yellow为更高级的gold
+        'deepskyblue',  # 替换cyan为更深的deepskyblue
+        'darkviolet',  # 替换magenta为更标准的darkviolet
+        'sienna',  # 替换brown为更专业的sienna
+        'dimgray',  # 替换gray为更易读的dimgray
+
+        # 新增10种高区分度颜色（Matplotlib标准名称）
+        'coral',
+        'royalblue',
+        'forestgreen',
+        'darkturquoise',
+        'orchid',
+        'peru',
+        'steelblue',
+        'tomato',
+        'mediumseagreen',
+        'slateblue'
+    ]
+
+    # Plot trajectories with anti-aliasing
+    for j in range(len(tour_indices)):
+        idx = tour_indices[j][0]
+        if len(idx.size()) == 1:
+            idx = idx.unsqueeze(0)
+        data = torch.gather(static[0].data, 1, idx.expand(static.size(1), -1)).cpu().numpy()
+
+        x, y = np.hstack(data[0]), np.hstack(data[1])
+        idx = np.hstack(tour_indices[j][0].cpu().numpy().flatten())
+        where = np.where(idx < num_depots)[0]
+
+        for k in range(len(where) - 1):
+            low, high = where[k], where[k + 1]
+            ax.plot(x[low:high + 1], y[low:high + 1],
+                    color=colors[j % len(colors)],
+                    linewidth=1.8,  # Thicker for JPG
+                    alpha=0.9,
+                    antialiased=True,  # Critical for JPG
+                    zorder=1)
+
+    # Enhanced markers for JPG
+    ax.scatter(static[0, 0, num_depots:].cpu(),
+               static[0, 1, num_depots:].cpu(),
+               s=25,  # Larger for JPG
+               c='#E31937',
+               marker='o',
+               edgecolor='white',
+               linewidth=0.8,
+               antialiased=True,
+               zorder=2,
+               label=f'T (n={static.size(2) - num_depots})')
+
+    ax.scatter(static[0, 0, :num_depots].cpu(),
+               static[0, 1, :num_depots].cpu(),
+               s=100,  # Significantly larger
+               c='#005CAB',
+               marker='^',
+               edgecolor='white',
+               linewidth=1.2,
+               antialiased=True,
+               zorder=3,
+               label=f'D (m={num_depots})')
+
+    ###################
+
+    # 添加横向图例（底部外部）
+    legend = ax.legend(
+        loc='lower center',  # 定位基准点（图例的底部中心）
+        bbox_to_anchor=(0.5, -0.15),  # (x,y)坐标：x=0.5居中，y=-0.15表示在坐标系下方15%处
+        ncol=2,  # 横向两列排列
+        frameon=False,  # 显示图例边框
+        borderpad=0.8,  # 边框内边距
+        handletextpad=0.5,  # 图标与文字间距
+        columnspacing=1.5,  # 列间距
+        fontsize=9,
+        markerscale=1.2  # 图例标记大小缩放因子
+    )
+
+    # 调整图形区域留出图例空间
+    plt.tight_layout(rect=[0, 0.02, 1, 0.98])  # 底部保留10%空白
+
+    ####################
+    # JPG-specific formatting
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+
+
+    # 坐标轴标签设置（会议论文标准）
+    ax.set_xlabel('X (km)',  # 使用方括号表示单位
+                  fontsize=10,
+                  labelpad=2,  # 标签与坐标轴的间距
+                  fontfamily='Arial')  # 推荐使用无衬线字体
+
+    ax.set_ylabel('Y (km)',
+                  fontsize=10,
+                  labelpad=2,
+                  fontfamily='Arial')
+
+    #
+    # fig.text(0.95, 0.02,  # x=95%宽度位置，y=2%高度位置
+    #          'Scale: 1 unit = 10 km',
+    #          ha='right',  # 右对齐
+    #          va='bottom',  # 底部对齐
+    #          fontsize=9,
+    #          bbox=dict(facecolor='white', alpha=0.8, boxstyle='round,pad=0.2'))
+
+    # 单位设置为km
+    ##################################
+    # 修改坐标轴标签（显示值×10）
+    ax.xaxis.set_major_formatter(lambda x, pos: f"{int(x * 10)}")  # X轴标签×10
+    ax.yaxis.set_major_formatter(lambda y, pos: f"{int(y*10)}")  # Y轴标签×10
+    # 可选：设置刻度间隔（例如每2单位一个刻度）
+    ax.set_xticks(np.arange(0, 1.1, 0.2))  # 实际数据范围仍为0-1
+    ax.set_yticks(np.arange(0, 1.1, 0.2))
+    #############################
+
+    # Save as high-quality JPG
+    plt.savefig(save_path,
+                bbox_inches='tight',
+                pad_inches=0.1,
+                dpi=800,  # Standard journal requirement
+                format='jpg',
+                )  # Explicit JPG format
+    plt.close('all')
+
+def renderold(static, tour_indices, num_depots, save_path):
     """绘制找到的解决方案。"""
     # 关闭所有潜在的之前的绘图
     plt.close('all')
@@ -968,7 +1098,34 @@ def render(static, tour_indices, num_depots, save_path):
         axes = [[axes]]
     # 将 axes 从二维列表转换为一维列表
     axes = [a for ax in axes for a in ax]
-    colors = ['red', 'blue', 'green', 'orange', 'purple', 'yellow', 'cyan', 'magenta', 'brown', 'gray']  # 创建颜色列表
+    # colors = ['red', 'blue', 'green', 'orange', 'purple', 'yellow', 'cyan', 'magenta', 'brown', 'gray']  # 创建颜色列表
+    colors = [
+        # 原始10色保留（顺序优化）
+        'firebrick',  # 替换red为更专业的firebrick
+        'dodgerblue',  # 替换blue为更醒目的dodgerblue
+        'limegreen',  # 替换green为更亮的limegreen
+        'darkorange',
+        'mediumpurple',  # 替换purple为更柔和的mediumpurple
+        'gold',  # 替换yellow为更高级的gold
+        'deepskyblue',  # 替换cyan为更深的deepskyblue
+        'darkviolet',  # 替换magenta为更标准的darkviolet
+        'sienna',  # 替换brown为更专业的sienna
+        'dimgray',  # 替换gray为更易读的dimgray
+
+        # 新增10种高区分度颜色（Matplotlib标准名称）
+        'coral',
+        'royalblue',
+        'forestgreen',
+        'darkturquoise',
+        'orchid',
+        'peru',
+        'steelblue',
+        'tomato',
+        'mediumseagreen',
+        'slateblue'
+    ]
+
+
     # 遍历每个子图，绘制路径
     for i, ax in enumerate(axes):
         for j in range(len(tour_indices)):  # j是飞机维度
@@ -987,21 +1144,26 @@ def render(static, tour_indices, num_depots, save_path):
             for k in range(len(where) - 1):
                 low = where[k]
                 high = where[k + 1]
-                ax.plot(x[low: high + 1], y[low: high + 1], zorder=1, color=colors[j % 10], label=j)
+                # ax.plot(x[low: high + 1], y[low: high + 1], zorder=1, color=colors[j % len(colors)], label=j)
+                ax.plot(x[low: high + 1], y[low: high + 1], zorder=1, color=colors[j % len(colors)])
 
             # 给每个点加上它的序号
-            for point_idx, (px, py) in enumerate(zip(x, y)):
-                ax.text(px, py, str(idx[point_idx]), fontsize=8, ha='right', va='bottom')
+            # for point_idx, (px, py) in enumerate(zip(x, y)):
+            #     ax.text(px, py, str(idx[point_idx]), fontsize=8, ha='right', va='bottom')
 
-        ax.scatter(static[i, 0, num_depots:].cpu(), static[i, 1, num_depots:].cpu(), s=10, c='r', zorder=2)
+        ax.scatter(static[i, 0, num_depots:].cpu(), static[i, 1, num_depots:].cpu(), s=3, c='r', zorder=2)
         ax.scatter(static[i, 0, :num_depots].cpu(), static[i, 1, :num_depots].cpu(), s=50, c='k', marker='*', zorder=3)
+
+
 
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1)
+
     # plt.show()
     plt.tight_layout()
     plt.savefig(save_path, bbox_inches='tight', dpi=500)
     plt.close('all')
+
 
 
 def render_dynamic(static, tour_indices, num_depots, save_path):
@@ -1159,7 +1321,7 @@ def validate(data_loader, actor, reward_fn, render_fn=None, save_dir='.',
 
         # 使用vrp奖励函数 reward_fn 计算预测的旅游索引的奖励。取奖励的均值，并使用 item() 提取标量值，添加到rewards列表中
         # reward = reward_fn(static, tour_indices).mean().item()
-        reward = reward_fn(static, tour_indices)  # 本batch的所有reward 列表 # todo 感觉画图的话要用到这里面的取数技巧。
+        reward = reward_fn(static, tour_indices)  # 本batch的所有reward 列表
         batch_reward_mean = reward.mean().item()  # 本batch的均值。
         # rewards.append(batch_reward_mean)
         rewards.extend(reward.tolist())
@@ -1167,7 +1329,7 @@ def validate(data_loader, actor, reward_fn, render_fn=None, save_dir='.',
         if render_fn is not None and batch_idx < num_plot:
             name = 'batch%d_reward%2.4f.png' % (batch_idx, batch_reward_mean)
             path = os.path.join(save_dir, name)
-            render_fn(static, tour_indices, depot_number, path)
+            # render_fn(static, tour_indices, depot_number, path) # todo 绘制路线图需要启用这行代码（画图）
             # render_dynamic(static, tour_indices,depot_number, "GIF")
     # 将模型 actor 设置回训练模式
     actor.train()
@@ -1204,7 +1366,7 @@ def train(actor, critic, share, task, num_city, train_data, valid_data, reward_f
 
     best_reward = np.inf  # 正无穷大
     all_epoch_loss, all_epoch_reward = [], []
-    for epoch in range(30):  # 执行20轮训练 fixme!!!!!!!!能不能把这个写到外面。
+    for epoch in range(30):  # 执行20轮训练
 
         actor.train()
         critic.train()
@@ -1229,7 +1391,7 @@ def train(actor, critic, share, task, num_city, train_data, valid_data, reward_f
             #     print("完成一个batch的前向传播")
             # Sum the log probabilities for each city in the tour(每个城市的对数几率和，作为真实奖励值)
             reward = reward_fn(static, tour_indices)  # (B,)
-            del tour_indices  # todo 减少内存占用
+            del tour_indices
             torch.cuda.empty_cache()
 
             # Query the critic for an estimate of the reward(向评论家询问奖励的估计值)
@@ -1259,7 +1421,7 @@ def train(actor, critic, share, task, num_city, train_data, valid_data, reward_f
             #     print("完成一个batch的反向传播")
 
             # 将奖励估计值，真实奖励值，actor损失平均求和后写入空列表中
-            #critic_rewards.append(torch.mean(critic_est.detach()).item())# todo 似乎没用到，先注释掉。
+            #critic_rewards.append(torch.mean(critic_est.detach()).item())# 似乎没用到，先注释掉。
             rewards.append(torch.mean(reward.detach()).item())
             losses.append(torch.mean(actor_loss.detach()).item())
 
@@ -1369,14 +1531,14 @@ def train(actor, critic, share, task, num_city, train_data, valid_data, reward_f
 
 def run_RL_exp(upper_, lower_, share_depot, args):
     # Determines the maximum amount of load for a vehicle based on num nodes
-    LOAD_DICT = {10: 20, 20: 30, 30: 35, 50: 40, 100: 50, 200: 80}  # todo 已经废弃
+    LOAD_DICT = {10: 20, 20: 30, 30: 35, 50: 40, 100: 50, 200: 80}  #已经废弃
     # MAX_DEMAND = 1
     STATIC_SIZE = 2  # (x, y)
     DYNAMIC_SIZE = 2  # (load, demand)
-    max_load = -1  #LOAD_DICT[args.num_city] # todo没事现在maxload已经废弃了
+    max_load = -1  #LOAD_DICT[args.num_city] # 没事现在maxload已经废弃了
     # car_load = 30.  #原版、
 
-    map_size = 1  # fixme 原代码地图大小默认1，不需要指定。而且本来产生坐标的时候就是0-1范围的浮点。
+    map_size = 1
     car_load = 2 * map_size * 1.4  # 测试
     MAX_DEMAND = 0.1  # 测试 # todo 目前是固定值。
 
@@ -1466,232 +1628,76 @@ def run_RL_exp(upper_, lower_, share_depot, args):
                                       args.seed + 2,
                                       args.depot_num)
 
+
+    test_reward,avg_time = run_RL_test_exp(upper_, lower_, share_depot,test_data, args, actor)
+
+    # if share_depot:
+    #     test_dir = 'test_picture_shared'
+    # else:
+    #     test_dir = 'test_picture'
+    #
+    # test_loader = DataLoader(test_data, args.batch_size, False, num_workers=0)
+    #
+    # test_out, test_reward = validate(test_loader, actor, reward, render, test_dir, num_plot=1,
+    #                                  depot_number=args.depot_num)
+
+
+    return test_reward
+
+def run_RL_test_exp(upper_, lower_, share_depot, test_data, args, actor=None):
+    # Determines the maximum amount of load for a vehicle based on num nodes
+    LOAD_DICT = {10: 20, 20: 30, 30: 35, 50: 40, 100: 50, 200: 80}  # 已经废弃
+    # MAX_DEMAND = 1
+    STATIC_SIZE = 2  # (x, y)
+    DYNAMIC_SIZE = 2  # (load, demand)
+    max_load = -1  # LOAD_DICT[args.num_city] # 没事现在maxload已经废弃了
+    # car_load = 30.  #原版、
+
+    map_size = 1
+    car_load = 2 * map_size * 1.4  # 测试
+    MAX_DEMAND = 0.1  # 测试 # todo 目前是固定值。
+
+
+    if actor is None: # 从algrithm compare调用此函数的时候会进入这个入口
+        if share_depot:
+            print("Shared depot.")
+            actor = DRL4TSP(STATIC_SIZE,DYNAMIC_SIZE,args.hidden_size,car_load,args.depot_num,
+                            update_dynamic_shared,update_mask_shared_TW,node_distance_shared,
+                            args.num_layers,args.dropout,upper_, lower_).to(device)
+        else:
+            print("Not Shared depot.")
+            actor = DRL4TSP(STATIC_SIZE,DYNAMIC_SIZE,args.hidden_size,car_load,args.depot_num,
+                            update_dynamic_independent,update_mask_independent_TW,node_distance_independent,
+                            args.num_layers,args.dropout,upper_, lower_).to(device)
+
+
+        if args.checkpoint:  # 读取之前保存的模型。
+            print(f"args.checkpoint:已经有ckpt,读取:{args.checkpoint}")
+            path = os.path.join(args.checkpoint, 'actor.pt')
+            actor.load_state_dict(torch.load(path, device))  # load_state_dict：加载模型参数
+        else:
+            raise ValueError("No args.checkpoint：模型从0初始化。真的要这样RL测试吗……。")
+
+    print(f"T={args.num_city} UAV={args.depot_num} 开始测试：args.valid_size={args.valid_size}")
+
     if share_depot:
         test_dir = 'test_picture_shared'
+        test_dir = '0418test_picture_shared'
     else:
         test_dir = 'test_picture'
 
     test_loader = DataLoader(test_data, args.batch_size, False, num_workers=0)
-
-    test_out, test_reward = validate(test_loader, actor, reward, render, test_dir, num_plot=1,
+    import time
+    start_time = time.time()
+    test_out, test_reward = validate(test_loader, actor, reward, render, test_dir, num_plot=20,
                                      depot_number=args.depot_num)
+    end_time = time.time()
+    total_time = round(end_time - start_time, 4)
+    avg_time = round(total_time / args.valid_size, 4)
+    print(f"RL T{args.num_city} uav{args.depot_num} 总运行时间{total_time}s。平均一图时间：{avg_time}s")
+    # ----------------------------------------------------------
 
-    # # print("\nRun data analysis:")
-    # analysis = data_analysis.Reward_Collect()
-    # analysis.reward_RL=test_reward
-    # analysis.reward_greedy = reward_greedy
-    # analysis.run_analysis()
-
-    return test_reward
-
-
-# def run_multi_alg_test(upper,lower,share_depot, args, algorithm):
-#     '''
-#     本函数内部生成测试数据集。
-#     返回的是{算法：测试结果} 字典
-#     '''
-#     if share_depot:
-#         print("Shared depot.")
-#     else:
-#         print("Independent depot.")
-#     print(f"args.num_city={args.num_city}")
-#     print(f"args.depot_num={args.depot_num}")
-#     print(f"开始测试：args.valid_size={args.valid_size}")
-#
-#     max_load = -1  #LOAD_DICT[args.num_city] # todo没事现在maxload已经废弃了
-#     map_size = 1  # fixme 原代码地图大小默认1，不需要指定。而且本来产生坐标的时候就是0-1范围的浮点。
-#     car_load = 2 * map_size * 1.4  # 测试
-#     MAX_DEMAND = 0.1  # 测试 # todo 目前是固定值。
-#
-#     # 生成测试数据，大小于验证数据一致(1000)
-#     test_data = VehicleRoutingDataset(args.valid_size,
-#                                       args.num_city,
-#                                       max_load,
-#                                       car_load,
-#                                       MAX_DEMAND,
-#                                       args.seed + 2,
-#                                       args.depot_num)
-#
-#     # print('DRL:Average tour length in test set: ', test_out)
-#
-#     algorithm_result={}
-#
-#     # -----------------------------------------------------------------Greedy
-#     if "greedy" in algorithm or "Greedy" in algorithm:
-#         from Greedy_VRP_TW_random import run_greedy_VRP
-#
-#         reward_greedy = run_greedy_VRP(test_data.static, args.num_city, args.depot_num,upper,lower,share=share_depot)
-#         algorithm_result["Greedy"]=reward_greedy
-#
-#     #------------------------------------------------------------------RL
-#     if "RL" in algorithm:
-#         STATIC_SIZE = 2  # (x, y)
-#         DYNAMIC_SIZE = 2  # (load, demand)
-#         if share_depot:
-#             actor = DRL4TSP(STATIC_SIZE,
-#                             DYNAMIC_SIZE,
-#                             args.hidden_size,
-#                             car_load,
-#                             args.depot_num,
-#                             update_dynamic_shared,
-#                             update_mask_shared_TW,
-#                             node_distance_shared,
-#                             args.num_layers,
-#                             args.dropout,
-#                             upper,lower).to(device)
-#         else:
-#             actor = DRL4TSP(STATIC_SIZE,
-#                             DYNAMIC_SIZE,
-#                             args.hidden_size,
-#                             car_load,
-#                             args.depot_num,
-#                             update_dynamic_independent,
-#                             update_mask_independent_TW,
-#                             node_distance_independent,
-#                             args.num_layers,
-#                             args.dropout,
-#                             upper,lower).to(device)
-#
-#         print(f"RL测试模式：读取ckpt:{args.checkpoint}")
-#         path = os.path.join(args.checkpoint, 'actor.pt')
-#         actor.load_state_dict(torch.load(path, device))  # load_state_dict：加载模型参数
-#
-#         if share_depot:
-#             test_dir = 'test_picture_shared_depot'
-#         else:
-#             test_dir = 'test_picture'
-#
-#         test_loader = DataLoader(test_data, args.batch_size, False, num_workers=0)
-#
-#         RL_test_out, RL_test_reward = validate(test_loader, actor, reward, render, test_dir, num_plot=5,
-#                                          depot_number=args.depot_num)
-#         algorithm_result["RL"]= RL_test_reward
-#
-#     return  algorithm_result
-#
-#
-# def test_generalization_uav_change(upper,lower,shared, run_alg_name):
-#     parser = argparse.ArgumentParser(description='Combinatorial Optimization')
-#     parser.add_argument('--seed', default=1234, type=int)
-#     parser.add_argument('--checkpoint', default=None)
-#     parser.add_argument('--test', action='store_true', default=True)
-#     parser.add_argument('--task', default='vrp')
-#     parser.add_argument('--nodes', dest='num_city', default=200, type=int)
-#     # parser.add_argument('--actor_lr', default=5e-4, type=float)
-#     # parser.add_argument('--critic_lr', default=5e-4, type=float)
-#     parser.add_argument('--actor_lr', default=1e-4, type=float)  # 学习率，现在在训练第4epoch，我手动改了一下
-#     parser.add_argument('--critic_lr', default=1e-4, type=float)
-#     parser.add_argument('--max_grad_norm', default=2., type=float)
-#     parser.add_argument('--batch_size', default=64, type=int)
-#     parser.add_argument('--hidden', dest='hidden_size', default=128, type=int)
-#     parser.add_argument('--dropout', default=0.1, type=float)
-#     parser.add_argument('--layers', dest='num_layers', default=1, type=int)
-#     parser.add_argument('--train-size', default=-1, type=int)
-#     parser.add_argument('--valid-size', default=1000, type=int)
-#     parser.add_argument('--depot_num', default=-1, type=int)
-#     # 解析为args
-#     args = parser.parse_known_args()[0]  # colab环境跑使用
-#
-#     if shared:
-#         args.checkpoint = os.path.join("trained_model", "total_shared_w200")
-#         # args.checkpoint = os.path.join("trained_model", "total_shared_w200_w250")
-#     else:  # not share
-#         args.checkpoint = os.path.join("trained_model", "trained_w200")
-#     print("比较算法：",run_alg_name)
-#     reward_list_dict={}
-#
-#     uav_list=list(range(2, 4))
-#     for uav_n in uav_list:
-#         args.depot_num=uav_n
-#         reward_dict = run_multi_alg_test(upper,lower,shared, args, algorithm=run_alg_name)
-#         for key,val in reward_dict.items():
-#             reward_list_dict.setdefault(key,[])
-#             reward_list_dict[key].append(np.mean(val))# 对每一个算法的reward集合计算平均值。
-#
-#     plt.close('all')
-#     for alg in reward_list_dict.keys():
-#         plt.plot(uav_list, reward_list_dict[alg], label=f"{alg} average path")
-#     # plt.plot(uav_list, avg_R_Greedy, label="Greedy average path")
-#     plt.legend()
-#     dir = os.path.join("generalization_test_picture")
-#     if not os.path.exists(dir):
-#         os.makedirs(dir)
-#     plt.savefig(os.path.join(dir, f"Greedy_VS_RL on {args.num_city} tower share={shared}.png"))
-#     # plt.show()
-#
-#     # 储存csv
-#     reward_filename = f"Generalization_compare on {args.num_city} T share={str(shared)}.csv"
-#     txt = ",".join(reward_list_dict.keys())+ "\n"
-#     # for greedy, RL in zip(avg_R_Greedy, avg_R_RL):
-#     for rs in zip(*reward_list_dict.values()):
-#         rs = list(map(str, list(rs)))
-#         txt += ",".join(rs)
-#         txt+="\n"
-#     with open(os.path.join(dir,reward_filename), "w") as f2:
-#         f2.write(txt)
-#     print(txt)
-#
-# def test_generalization_tower_change(upper,lower,share,run_alg_name):
-#     parser = argparse.ArgumentParser(description='Combinatorial Optimization')
-#     parser.add_argument('--seed', default=1234, type=int)
-#     parser.add_argument('--checkpoint', default=None)
-#     parser.add_argument('--test', action='store_true', default=False)
-#     parser.add_argument('--task', default='vrp')
-#     parser.add_argument('--nodes', dest='num_city', default=-1, type=int)
-#     # parser.add_argument('--actor_lr', default=5e-4, type=float)
-#     # parser.add_argument('--critic_lr', default=5e-4, type=float)
-#     parser.add_argument('--actor_lr', default=1e-4, type=float)  # 学习率，现在在训练第4epoch，我手动改了一下
-#     parser.add_argument('--critic_lr', default=1e-4, type=float)
-#     parser.add_argument('--max_grad_norm', default=2., type=float)
-#     parser.add_argument('--batch_size', default=64, type=int)
-#     parser.add_argument('--hidden', dest='hidden_size', default=128, type=int)
-#     parser.add_argument('--dropout', default=0.1, type=float)
-#     parser.add_argument('--layers', dest='num_layers', default=1, type=int)
-#     parser.add_argument('--train-size', default=-1, type=int)
-#     parser.add_argument('--valid-size', default=1000, type=int)
-#     parser.add_argument('--depot_num', default=20, type=int)
-#     # 解析为args
-#     args = parser.parse_known_args()[0]  # colab环境跑使用
-#
-#     args.test = True
-#     if share:
-#         args.checkpoint = os.path.join("trained_model", "total_shared_w200")
-#     else:  # not share
-#         args.checkpoint = os.path.join("trained_model", "trained_w200")
-#
-#     # run_alg_name = ["Greedy", "RL"]
-#     print("比较算法：", run_alg_name)
-#     reward_list_dict = {}
-#
-#     tower_list = list(range(200, 301, 50))
-#     for tower_n in tower_list:
-#         args.num_city = tower_n
-#         # reward_rl, reward_greedy = run_exp(share, args)
-#         reward_dict= run_multi_alg_test(upper,lower,share, args, algorithm=run_alg_name)
-#         for key, val in reward_dict.items():
-#             reward_list_dict.setdefault(key, [])
-#             reward_list_dict[key].append(np.mean(val))  # 对每一个算法的reward集合计算平均值。
-#     for alg in reward_list_dict.keys():
-#         plt.plot(tower_list, reward_list_dict[alg], label=f"{alg} average path")
-#     plt.legend()
-#     dir = os.path.join("generalization_test_picture")
-#     if not os.path.exists(dir):
-#         os.makedirs(dir)
-#     share=str(share)
-#     plt.savefig(os.path.join(dir, f"Greedy_VS_RL on {args.depot_num} UAV share={share}.png"))
-#     # plt.show()
-#
-#     # 储存csv
-#     reward_filename = f"Generalization_on {args.depot_num} UAV share={str(share)}.csv"
-#     txt = ",".join(reward_list_dict.keys()) + "\n"
-#     for rs in zip(*reward_list_dict.values()):
-#         rs = list(map(str, list(rs)))
-#         txt += ",".join(rs)
-#         txt+="\n"
-#     with open(os.path.join(dir,reward_filename), "w") as f2:
-#         f2.write(txt)
-#     print(txt)
-
+    return test_reward, avg_time
 
 if __name__ == '__main__':
     # 命令行参数解析器对象 parser.参数是按顺序的。。。。
@@ -1700,38 +1706,39 @@ if __name__ == '__main__':
     parser.add_argument('--checkpoint', default=None)
     parser.add_argument('--test', action='store_true', default=False)
     parser.add_argument('--task', default='vrp')
-    parser.add_argument('--nodes', dest='num_city', default=200, type=int)  # todo 对齐#########
+    parser.add_argument('--nodes', dest='num_city', default=400, type=int)  # todo 对齐#########
     # parser.add_argument('--actor_lr', default=5e-4, type=float)
     # parser.add_argument('--critic_lr', default=5e-4, type=float)
-    parser.add_argument('--actor_lr', default=1e-4, type=float)  # 学习率，现在在训练第4epoch，我手动改了一下
+    parser.add_argument('--actor_lr', default=1e-4, type=float)
     parser.add_argument('--critic_lr', default=1e-4, type=float)
     parser.add_argument('--max_grad_norm', default=2., type=float)
-    parser.add_argument('--batch_size', default=64, type=int)  # fixme#########################
+    parser.add_argument('--batch_size', default=2, type=int)  # fixme#########################
     # parser.add_argument('--batch_size', default=8, type=int) ##########
     parser.add_argument('--hidden', dest='hidden_size', default=128, type=int)
     parser.add_argument('--dropout', default=0.1, type=float)
     parser.add_argument('--layers', dest='num_layers', default=1, type=int)
-    parser.add_argument('--train-size', default=100000, type=int)  #fixme!!!!!!!!!!!!
-    parser.add_argument('--valid-size', default=1000, type=int)
+    parser.add_argument('--train-size', default=0, type=int)  #fixme!!!!!!!!!!!!
+    parser.add_argument('--valid-size', default=10, type=int)
     parser.add_argument('--depot_num', default=20, type=int)  # todo ###############
 
     # 解析为args
     args = parser.parse_known_args()[0]  # colab环境跑使用
     # --------------------------------------------------------------------
-    args.test = False
+    args.test = True
     # --------------------------------------------------------------------
     # 设置checkpoint路径
     share = True  # todo 检查#############
     upper, lower = 1.1, 0.9
 
     if share:
-        args.checkpoint = os.path.join("TW_random_train_log_share", "200", "2_12_21_30_21")
+        args.checkpoint = os.path.join("TW_random_train_log_share", "200", "2_14_23_17_39")
         # DRL:Average tour length in test set:  11.895152610301972
     else:
-        args.checkpoint = os.path.join("TW_random_train_log", "200", "2_12_21_23_45")
+        args.checkpoint = os.path.join("TW_random_train_log", "200", "2_14_23_16_34")
         # DRL:Average tour length in test set:  12.368312227249145
 
     reward_rl = run_RL_exp(upper, lower, share, args)
+
     mean_rl = np.mean(reward_rl)
     print('DRL:Average tour length in test set: ', mean_rl)
     #--------------------------------------------------------------

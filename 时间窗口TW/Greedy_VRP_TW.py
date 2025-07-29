@@ -7,13 +7,61 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
 
-def DRL4VRP_Problem(tower_num, uav_num, position,est_upper, est_lower, _share, tower_demand=None):
+def plot_track(tower_num,uav_num,_share,points_set, total_dis, save_dir, MAP_SIZE=1):
+    '''
+    用于画出轨迹的动图 todo 现在只能画一张图……【要限定固定的画图张数量吗
+    '''
+
+    plt.close('all')
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.set_ylim(0, MAP_SIZE)
+    ax.set_xlim(0, MAP_SIZE)
+
+    plt.tight_layout()
+    # ax.grid()
+    # plt.scatter(x[0], y[0], marker="*")  # 仓库
+
+    # ----------------------
+    x = [np.array([p[0] for p in track]) for track in points_set]
+    y = [np.array([p[1] for p in track]) for track in points_set]
+
+    tower_x = [x1[1:] for x1 in x]
+    tower_y = [y1[1:] for y1 in y]
+    for xt, yt in zip(tower_x, tower_y):
+        plt.scatter(xt, yt, s=10)  # 画出城市的点 # s是大小
+    # 用于画出仓库点。拼接在一起
+    plt.scatter([x1[0] for x1 in x], [y1[0] for y1 in y], marker="*", s=90)  # 仓库
+
+    lines = [ax.plot([], [], lw=1)[0] for _ in range(len(points_set))]
+    plt.tight_layout()
+
+    # ----------------------
+
+    def init():
+        for line in lines:
+            line.set_data([], [])
+        return lines
+
+    def animate(N):
+        for line, x1, y1 in zip(lines, x, y):
+            line.set_data(x1[:N], y1[:N])
+        return lines
+
+    ani = animation.FuncAnimation(fig, animate, 50, init_func=init, interval=200)
+    title = f"Greedy T{tower_num} UAV{uav_num} reward{round(total_dis, 3)} share={str(_share)}"
+    plt.title(title)
+    ani.save(os.path.join(save_dir, f"{title}.gif"), writer='pillow', dpi=500)  # 保存
+    plt.show()
+    plt.close('all')
+    print(f"{title} 绘图完成")
+
+def Greedy_VRP_Problem(tower_num, uav_num, position, est_upper, est_lower, _share, tower_demand=None,get_tower_trake=False):
     """
     """
     MAP_SIZE = 1  # 这是边长。100*100.能量需要2*√2 *100=280
     MAX_ENERGY = 2 *  MAP_SIZE * 1.4  # 为了保证一定能够飞到最远端。 # todo 对齐1
-    TOWER_NEED =0.1 # todo 暂定是0.1。对齐1
-
+    TOWER_NEED = 0.1 # todo 暂定是0.1。对齐1
+    DEPOT_NEED = 0.1
     # 创建地图.前uav_num个是给无人机仓库用的
     tower_position = position[uav_num:] # 电塔坐标
 
@@ -69,51 +117,7 @@ def DRL4VRP_Problem(tower_num, uav_num, position,est_upper, est_lower, _share, t
     '''
 
 
-    def plot_track(points_set,total_dis,save_dir):
-        '''
-        用于画出轨迹的动图 todo 现在只能画一张图……【要限定固定的画图张数量吗
-        '''
-        plt.close('all')
-        fig, ax = plt.subplots(figsize=(6, 6))
-        ax.set_ylim(0, MAP_SIZE)
-        ax.set_xlim(0, MAP_SIZE)
 
-        plt.tight_layout()
-        # ax.grid()
-        # plt.scatter(x[0], y[0], marker="*")  # 仓库
-
-        # ----------------------
-        x = [np.array([p[0] for p in track]) for track in points_set]
-        y = [np.array([p[1] for p in track]) for track in points_set]
-
-        tower_x=[x1[1:] for x1 in x]
-        tower_y=[y1[1:] for y1 in y]
-        for xt,yt in zip(tower_x,tower_y):
-            plt.scatter(xt,yt,s=10) # 画出城市的点 # s是大小
-        # 用于画出仓库点。拼接在一起
-        plt.scatter([x1[0] for x1 in x], [y1[0] for y1 in y], marker="*",s=90)  # 仓库
-
-        lines = [ax.plot([], [], lw=1)[0] for _ in range(len(points_set))]
-        plt.tight_layout()
-        # ----------------------
-
-        def init():
-            for line in lines:
-                line.set_data([], [])
-            return lines
-
-        def animate(N):
-            for line, x1, y1 in zip(lines, x, y):
-                line.set_data(x1[:N], y1[:N])
-            return lines
-
-        ani = animation.FuncAnimation(fig, animate, 50, init_func=init, interval=200)
-        title=f"Greedy T{tower_num} UAV{uav_num} reward{round(total_dis,3)} share={str(_share)}"
-        plt.title(title)
-        ani.save(os.path.join(save_dir,f"{title}.gif"), writer='pillow',dpi=500)  # 保存
-        # plt.show()
-        plt.close('all')
-        print(f"{title} 绘图完成")
 
 
 
@@ -128,6 +132,9 @@ def DRL4VRP_Problem(tower_num, uav_num, position,est_upper, est_lower, _share, t
             self.current_node_id=init_id # 要多加一个这个。
             self.track = [depot_pos]  # 路程轨迹坐标……不是id。初始化仓库位置。当前所在位置=取[-1]
             self.energy = MAX_ENERGY # 初始化
+
+            # 晕倒了。为了VNS设立的变量。记录路过的tower的id而不是二维坐标
+            self.tower_id_track = []
 
         def is_in_depot(self):
             # 【非共享版本】
@@ -272,6 +279,7 @@ def DRL4VRP_Problem(tower_num, uav_num, position,est_upper, est_lower, _share, t
                 else:  # 如果能量足够：过去那个tower。并且标记已访问。消耗能量
                     empty_depot[uav.current_node_id]=True #
                     uav.track.append(tower_position[near_tower_index]) #这是tower里面的id！！
+                    uav.tower_id_track.append(near_tower_index)
                     tower_demand[near_tower_index] = 0  # 更新demand
                     visited_tower[near_tower_index] = True
                     uav.current_node_id= near_tower_index + uav_num # 切换当前位置
@@ -301,14 +309,15 @@ def DRL4VRP_Problem(tower_num, uav_num, position,est_upper, est_lower, _share, t
                     empty_depot[depot_id] = False
                     uav.energy = MAX_ENERGY
                     # rand_factor=(est_lower+np.random.rand()*(est_upper-est_lower))
-                    uav_order.append((uav_index, uav_order.pop(0)[1] + cost + TOWER_NEED ))  # 添加任务时间排序 # todo 电塔检查不用随机
+                    uav_order.append((uav_index, uav_order.pop(0)[1] + cost + DEPOT_NEED ))  # 添加任务时间排序 # todo 电塔检查不用随机
                 else:  # 如果能量足够：过去下一个tower。并且标记已访问。消耗能量
                     uav.track.append(tower_position[near_tower_index])
+                    uav.tower_id_track.append(near_tower_index)
                     uav.current_node_id=near_tower_index+uav_num # 转换成node id
                     tower_demand[near_tower_index]=0 # 更新demand
                     visited_tower[near_tower_index] = True
                     rand_factor = (est_lower + np.random.rand() * (est_upper - est_lower))
-                    cost = (dis_go ) * rand_factor  + demand # fix: 减去电塔demand # todo rand_factor只能加在路径上
+                    cost = (dis_go ) * rand_factor + demand # fix: 减去电塔demand # todo rand_factor只能加在路径上
                     uav.energy -= cost
                     uav_order.append((uav_index, uav_order.pop(0)[1] + cost))  # 添加任务时间排序
             if uav.energy<0:
@@ -325,19 +334,23 @@ def DRL4VRP_Problem(tower_num, uav_num, position,est_upper, est_lower, _share, t
 
         # 计算总路程部分。
         total_dis = 0
-        all_track = [] # 不是兄弟你记录这个干什么
+        all_track = []
+        all_uav_tower_track_id={} # 为了VSN初始解设定的
         for u in range(uav_num):
             uav = uav_set[u]
             if uav.current_node_id>= uav_num:
                 raise ValueError(f"track uav{u} final position:{uav.current_node_id} is not depot")
             all_track.append(uav.track) #
+            all_uav_tower_track_id[u] = uav.tower_id_track # 为了VSN初始解设定的
             dis = uav.get_total_dis()
             total_dis += dis # 记录总距离。
 
 
-        # plot_track(all_track,total_dis,"Greedy_GIF") # 画出本地图的动态图。
-
-        return total_dis
+        # plot_track(tower_num,uav_num,_share,all_track,total_dis,"Greedy_GIF") # 画出本地图的动态图。
+        if get_tower_trake:
+            return total_dis,all_uav_tower_track_id
+        else:
+            return total_dis
 
     return run() # 返回本次
 
@@ -358,18 +371,25 @@ def run_greedy_VRP(position_set,tower_n,uav_n,upper,lower,share,tower_demand_set
     position_set = position_set.transpose(0, 2, 1)
 
     data_size=position_set.shape[0]
+
+    import time
+    start_time = time.time()
     for t in range(data_size):
         position = position_set[t]  # 使用外界传进来的坐标
         if tower_demand_set is not None:
             tower_demand= tower_demand_set[t]
         else:
             tower_demand = None
-        reward = DRL4VRP_Problem(tower_n, uav_n, position, upper, lower,share, tower_demand=tower_demand)
+        reward = Greedy_VRP_Problem(tower_n, uav_n, position, upper, lower, share, tower_demand=tower_demand)
         reward_set.append(reward)
+    end_time = time.time()
+    total_time = round(end_time - start_time, 4)
+    avg_time = round(total_time / data_size, 4)
+    print(f"Greedy T{tower_n} uav{uav_n} 总运行时间{total_time}s。平均一图时间：{avg_time}s")
 
-    average_reward = sum(reward_set) / data_size
+    # average_reward = sum(reward_set) / data_size
     # print(f"Run {run_times} times. Average tour length:  {average_reward}")
-    return reward_set
+    return reward_set,avg_time
 
 def draw_path_change(share):
     '''
@@ -406,15 +426,13 @@ def draw_uav_change(upper,lower,share):
 
 
 if __name__ == "__main__":
-    run_times=1000
+    run_times=1
     tower_n=50
-    uav_n=5
+    uav_n=10
     # share_depot=False
-    np.random.seed(111) #方便debug。
+    np.random.seed(123) #方便debug。
     position_set = np.random.random(size=(run_times, 2, tower_n + uav_n)) # 共用地图。
     share=True
-    #  Run 1000 times. 贪心共享 Average tour length:  33.94767549728042
-    # Run 1000 times. 贪心非共享 Average tour length:  28.216352640810392 (?居然非共享更好)
     upper, lower=1.1, 0.9
 
     if share:

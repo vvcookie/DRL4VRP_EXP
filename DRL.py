@@ -1516,7 +1516,7 @@ if __name__ == '__main__':
     parser.add_argument('--checkpoint', default=None)
     parser.add_argument('--test', action='store_true', default=False)
     parser.add_argument('--task', default='vrp')
-    parser.add_argument('--nodes', dest='num_city', default=10, type=int)  #todo 对齐#########
+    parser.add_argument('--nodes', dest='num_city', default=50, type=int)  #todo 对齐#########
     # parser.add_argument('--actor_lr', default=5e-4, type=float)
     # parser.add_argument('--critic_lr', default=5e-4, type=float)
     parser.add_argument('--actor_lr', default=1e-4, type=float)  # 学习率，现在在训练第4epoch，我手动改了一下
@@ -1527,21 +1527,21 @@ if __name__ == '__main__':
     parser.add_argument('--hidden', dest='hidden_size', default=128, type=int)
     parser.add_argument('--dropout', default=0.1, type=float)
     parser.add_argument('--layers', dest='num_layers', default=1, type=int)
-    parser.add_argument('--train-size', default=100, type=int)  #fixme!!!!!!!!!!!!
+    parser.add_argument('--train-size', default=100000, type=int)  #fixme!!!!!!!!!!!!
     parser.add_argument('--valid-size', default=1000, type=int)
-    parser.add_argument('--depot_num', default=5, type=int)  # todo ###############
+    parser.add_argument('--depot_num', default=50, type=int)  # todo ###############
 
     # 解析为args
     args = parser.parse_known_args()[0]  # colab环境跑使用
     # --------------------------------------------------------------------
-    args.test = True
+    args.test = False
     # --------------------------------------------------------------------
     # 设置checkpoint路径
-    share = True      # todo 检查#############
-    if share:
-        args.checkpoint = os.path.join("trained_model", "total_shared_w200")
-    else:
-        args.checkpoint = os.path.join("trained_model", "trained_w200")
+    share = False         # todo 检查#############
+    # if share:
+    #     args.checkpoint = os.path.join("trained_model", "total_shared_w200")
+    # else:
+    #     args.checkpoint = os.path.join("trained_model", "trained_w200")
 
     # todo：测试较小的train size是否能达到类似的精度。【向下兼容的泛化性会更好吗：会】
     #  todo ：试试直接用大数据来从0训练。？？？
