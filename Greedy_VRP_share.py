@@ -64,7 +64,7 @@ def DRL4VRP_Problem(tower_num, uav_num, position,share):
     '''
 
 
-    def plot_track(points_set,save_dir):
+    def plot_track(points_set,save_dir,save=False):
         '''
         用于画出轨迹的动图 todo 现在只能画一张图……【要限定固定的画图张数量吗
         '''
@@ -105,8 +105,9 @@ def DRL4VRP_Problem(tower_num, uav_num, position,share):
         ani = animation.FuncAnimation(fig, animate, 50, init_func=init, interval=200)
         title=f"Greedy T{tower_num} UAV{uav_num} share={str(share)}"
         plt.title(title)
-        ani.save(os.path.join(save_dir,f"{title}.gif"), writer='pillow',dpi=500)  # 保存
-        # plt.show()
+        if save:
+            ani.save(os.path.join(save_dir,f"{title}.gif"), writer='pillow',dpi=500)  # 保存
+        plt.show()
         plt.close('all')
 
 
@@ -303,8 +304,7 @@ def DRL4VRP_Problem(tower_num, uav_num, position,share):
 
         # print(f"total distance:{total_dis}")
 
-        # plot_track(all_track,"GIF") # 画出本地图的动态图。 # todo ……要怎么给RL和GD来对齐画图呢。
-
+        # plot_track(all_track,"GIF",save=False) # 画出本地图的动态图。 # todo ……要怎么给RL和GD来对齐画图呢。
         return total_dis
 
     return run() # 返回本次
@@ -369,11 +369,11 @@ def draw_uav_change(share):
 
 
 if __name__ == "__main__":
-    run_times=1000
-    tower_n=10
-    uav_n=2
+    run_times=100
+    tower_n= 50
+    uav_n= 5
     # share_depot=False
-    np.random.seed(111) #方便debug。
+    np.random.seed(123) #方便debug。
     position_set = np.random.random(size=(run_times, 2, tower_n + uav_n)) # 共用地图。
 
     # todo 怎么感觉Greedy 怪怪的……选最近的仓库要不要仅根据当前点-下一个点的距离，来贪心？
