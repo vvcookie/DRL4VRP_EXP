@@ -1,7 +1,6 @@
 import os.path
 
 import  numpy as np
-from jedi.inference.finder import filter_name
 
 from Algrithm_compare import run_multi_alg_test
 
